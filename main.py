@@ -12,6 +12,12 @@ try:
 except ImportError:
     WIN32_AVAILABLE = False
 
+try:
+    import winsound
+    WINSOUND_AVAILABLE = True
+except ImportError:
+    WINSOUND_AVAILABLE = False
+
 DB_PATH = "clientes.db"
 PEDIDOS_PATH = "pedidos_dia.json"
 
@@ -24,6 +30,21 @@ GRID_COLORS = {"Comida":"#2d3a5e","Paquetes":"#3b2d5e","Bebidas":"#1e4d3a"}
 
 BG_DARK="#1a1a2e"; BG_CARD="#16213e"; ACCENT="#e94560"
 ACCENT2="#533483"; TXT="#eaeaea"; GREEN="#00b894"; GOLD="#fdcb6e"
+ERROR_RED="#d63031"
+
+def play_notification_sound(kind: str):
+    if not WINSOUND_AVAILABLE:
+        return
+    if kind=="print_success":
+        winsound.MessageBeep(winsound.MB_OK)
+    elif kind=="print_error":
+        winsound.MessageBeep(winsound.MB_ICONHAND)
+    elif kind=="clean_success":
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    elif kind=="list_click":
+        winsound.Beep(1200, 45)
+    else:
+        winsound.Beep(900, 45)
 
 # ─── DB ───
 def init_db():
@@ -376,26 +397,40 @@ class HistorialDialog:
     def __init__(self,page):
         self.page=page
 
+    def _mostrar_estado_impresion(self, ok: bool):
+        txt = "Impresion Exitosa" if ok else "Error de impresion"
+        bg = GREEN if ok else ERROR_RED
+        self.page.snack_bar=ft.SnackBar(ft.Text(txt,color="white"),bgcolor=bg)
+        self.page.snack_bar.open=True
+        self.page.update()
+
     def _pedido_card(self,p):
         # Client info lines
         info=[]
         if p.get("domicilio"): info.append(f"📍 {p['domicilio']}")
         if p.get("cruces"): info.append(f"🔀 {p['cruces']}")
         if p.get("telefono"): info.append(f"📞 {p['telefono']}")
-        if p.get("hora_especifica"): info.append(f"⏰ {p['hora_especifica']}")
+        hora_especifica = p.get("hora_especifica","")
 
         def reimprimir(_e,ped=p):
             ticket=generar_ticket_impresion(ped)
             print("\n"+ticket)
             ok,msg=printer.imprimir(ticket)
-            if ok:
-                self.page.snack_bar=ft.SnackBar(ft.Text("🖨️ Ticket reimpreso",color="white"),bgcolor=GREEN)
-            else:
-                self.page.snack_bar=ft.SnackBar(ft.Text(f"⚠️ {msg}",color="white"),bgcolor=ACCENT)
-            self.page.snack_bar.open=True; self.page.update()
+            play_notification_sound("print_success" if ok else "print_error")
+            self._mostrar_estado_impresion(ok)
 
         return ft.Container(
             content=ft.Column([
+                ft.Row([
+                    ft.Container(expand=True),
+                    ft.Text(
+                        f"⏰ {hora_especifica}",
+                        color=GOLD,
+                        size=22,
+                        weight=ft.FontWeight.W_900,
+                        text_align=ft.TextAlign.RIGHT,
+                    ) if hora_especifica else ft.Container(),
+                ],alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 # Cliente info (destacado)
                 *[ft.Text(line,color=TXT,size=12,weight=ft.FontWeight.BOLD) for line in info],
                 ft.Divider(color=ACCENT2,height=1),
@@ -467,6 +502,11 @@ def main(page: ft.Page):
     resumen=ResumenPedido(page,state)
     historial=HistorialDialog(page)
 
+    def mostrar_mensaje_estado(texto: str, ok: bool):
+        page.snack_bar=ft.SnackBar(ft.Text(texto,color="white"),bgcolor=GREEN if ok else ERROR_RED)
+        page.snack_bar.open=True
+        page.update()
+
     def on_product(name,price):
         if not state.platos:
             state.crear_plato()
@@ -495,19 +535,19 @@ def main(page: ft.Page):
         print("\n"+ticket)  # Consola siempre
         # Intentar impresión física
         ok,msg=printer.imprimir(ticket)
-        if ok:
-            page.snack_bar=ft.SnackBar(ft.Text(f"✅ Pedido guardado e impreso ({printer.printer_name})",color="white"),bgcolor=GREEN)
-        else:
-            page.snack_bar=ft.SnackBar(ft.Text(f"⚠️ Pedido guardado. {msg}",color="white"),bgcolor=ACCENT)
-        page.snack_bar.open=True; page.update()
+        play_notification_sound("print_success" if ok else "print_error")
+        mostrar_mensaje_estado("Impresion Exitosa" if ok else "Error de impresion",ok)
 
     def on_limpiar(_e):
         state.limpiar(); form.limpiar(); resumen.refresh()
+        play_notification_sound("clean_success")
+        mostrar_mensaje_estado("Limpiesa Exitosa",True)
 
     def on_crear_plato(_e):
         state.crear_plato(); resumen.refresh()
 
     def on_lista(_e):
+        play_notification_sound("list_click")
         historial.mostrar()
 
     btns=ft.Column([

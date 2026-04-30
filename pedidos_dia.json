@@ -155,5 +155,67 @@
       }
     ],
     "total": 90
+  },
+  {
+    "fecha": "2026-04-29",
+    "hora": "23:20:14",
+    "telefono": "",
+    "domicilio": "",
+    "cruces": "",
+    "hora_especifica": "",
+    "platos": [],
+    "total": 0
+  },
+  {
+    "fecha": "2026-04-29",
+    "hora": "23:20:29",
+    "telefono": "222",
+    "domicilio": "222",
+    "cruces": "222",
+    "hora_especifica": "",
+    "platos": [
+      {
+        "nombre": "Plato 1",
+        "items": [
+          {
+            "name": "Torta",
+            "price": 60,
+            "qty": 1
+          },
+          {
+            "name": "Paquete #1",
+            "price": 90,
+            "qty": 1
+          }
+        ]
+      }
+    ],
+    "total": 150
+  },
+  {
+    "fecha": "2026-04-29",
+    "hora": "23:20:36",
+    "telefono": "222",
+    "domicilio": "222",
+    "cruces": "222",
+    "hora_especifica": "",
+    "platos": [
+      {
+        "nombre": "Plato 1",
+        "items": [
+          {
+            "name": "Torta",
+            "price": 60,
+            "qty": 1
+          },
+          {
+            "name": "Paquete #1",
+            "price": 90,
+            "qty": 1
+          }
+        ]
+      }
+    ],
+    "total": 150
   }
 ]
