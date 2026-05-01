@@ -32,11 +32,12 @@ TACO_TYPES = ["Papa","Frijol","Requesón","Picadillo"]
 DRINK_TYPES = ["Coca","Fanta","Manzana","Sprite","Jamaica","Horchata"]
 BEER_TYPES = ["Clara","Obscura"]
 AGUA_TYPES = ["Jamaica","Horchata"]
-GRID_COLORS = {"Comida":"#2d3a5e","Paquetes":"#3b2d5e","Bebidas":"#1e4d3a"}
+GRID_COLORS = {"Comida":"#F5E7D0","Paquetes":"#EEDCC1","Bebidas":"#F9EFE0"}
 
-BG_DARK="#1a1a2e"; BG_CARD="#16213e"; ACCENT="#e94560"
-ACCENT2="#533483"; TXT="#eaeaea"; GREEN="#00b894"; GOLD="#fdcb6e"
-ERROR_RED="#d63031"
+BG_DARK="#F2E6D3"; BG_CARD="#FFFDF8"; ACCENT="#B33939"
+ACCENT2="#D8C1A0"; TXT="#4A2A22"; GREEN="#16A34A"; GOLD="#8F2D2D"
+ERROR_RED="#8B1E1E"
+BG_PANEL="#FBF4E8"; BG_ITEM="#F3E6D3"; TXT_MUTED="#8A6F5A"; INPUT_BG="#FFFFFF"
 
 def play_notification_sound(kind: str):
     if not WINSOUND_AVAILABLE:
@@ -194,24 +195,42 @@ class PedidoState:
 class FormularioCliente:
     def __init__(self,page,state):
         self.page=page; self.state=state
-        ts=dict(dense=True,border_color=ACCENT2,color=TXT,text_size=13,height=40)
+        ts=dict(dense=True,border_color=ACCENT2,color=TXT,bgcolor=INPUT_BG,text_size=13,height=40)
         self.tf_dom=ft.TextField(width=200,**ts)
         self.tf_cru=ft.TextField(width=200,**ts)
         self.tf_tel=ft.TextField(width=150,on_blur=self._buscar,on_submit=self._buscar,**ts)
         # Segmented buttons
         self.seg_tel=ft.SegmentedButton(
-            segments=[ft.Segment(value="si",label=ft.Text("Sí")),ft.Segment(value="no",label=ft.Text("No"))],
+            segments=[ft.Segment(value="si",label=ft.Text("Sí",color=TXT)),ft.Segment(value="no",label=ft.Text("No",color=TXT))],
             selected=["si"],on_change=self._toggle_tel,allow_empty_selection=False)
         self.seg_hora=ft.SegmentedButton(
-            segments=[ft.Segment(value="si",label=ft.Text("Sí")),ft.Segment(value="no",label=ft.Text("No"))],
+            segments=[ft.Segment(value="si",label=ft.Text("Sí",color=TXT)),ft.Segment(value="no",label=ft.Text("No",color=TXT))],
             selected=["no"],on_change=self._toggle_hora,allow_empty_selection=False)
         # Hour dropdowns
-        self.dd_h=ft.Dropdown(width=80,options=[ft.DropdownOption(key=str(i),text=str(i)) for i in range(1,13)],
-                              value="12",dense=True,disabled=True,text_size=14)
-        self.dd_m=ft.Dropdown(width=80,options=[ft.DropdownOption(key=f"{i:02d}",text=f"{i:02d}") for i in range(0,60,10)],
-                              value="00",dense=True,disabled=True,text_size=14)
-        self.dd_p=ft.Dropdown(width=95,options=[ft.DropdownOption(key="AM",text="AM"),ft.DropdownOption(key="PM",text="PM")],
-                              value="PM",dense=True,disabled=True,text_size=14)
+        dds=dict(
+            dense=True,
+            text_size=18,
+            text_style=ft.TextStyle(size=18,weight=ft.FontWeight.W_700,color=TXT),
+            border_color=ACCENT,
+            focused_border_color=ACCENT,
+            border_width=1.5,
+            focused_border_width=2,
+            color=TXT,
+            bgcolor=INPUT_BG,
+            filled=True,
+            fill_color=INPUT_BG,
+            content_padding=ft.Padding(12,10,12,10),
+            height=52,
+        )
+        self.dd_h=ft.Dropdown(width=88,options=[ft.DropdownOption(key=str(i),text=str(i)) for i in range(1,13)],
+                              value="12",disabled=False,**dds)
+        self.dd_m=ft.Dropdown(width=88,options=[ft.DropdownOption(key=f"{i:02d}",text=f"{i:02d}") for i in range(0,60,10)],
+                              value="00",disabled=False,**dds)
+        self.dd_p=ft.Dropdown(width=102,options=[ft.DropdownOption(key="AM",text="AM"),ft.DropdownOption(key="PM",text="PM")],
+                              value="PM",disabled=False,**dds)
+        self.dd_h.border_color=ACCENT2; self.dd_m.border_color=ACCENT2; self.dd_p.border_color=ACCENT2
+        self.dd_h.focused_border_color=ACCENT2; self.dd_m.focused_border_color=ACCENT2; self.dd_p.focused_border_color=ACCENT2
+        self.dd_h.color=TXT_MUTED; self.dd_m.color=TXT_MUTED; self.dd_p.color=TXT_MUTED
 
     def _buscar(self,e):
         tel=self.tf_tel.value.strip()
@@ -227,7 +246,12 @@ class FormularioCliente:
 
     def _toggle_hora(self,e):
         off="no" in self.seg_hora.selected
-        self.dd_h.disabled=off; self.dd_m.disabled=off; self.dd_p.disabled=off; self.page.update()
+        for dd in (self.dd_h,self.dd_m,self.dd_p):
+            dd.disabled=False
+            dd.border_color=ACCENT2 if off else ACCENT
+            dd.focused_border_color=ACCENT2 if off else ACCENT
+            dd.color=TXT_MUTED if off else TXT
+        self.page.update()
 
     def get_hora_str(self):
         if "no" in self.seg_hora.selected: return ""
@@ -241,7 +265,10 @@ class FormularioCliente:
         self.tf_dom.value=""; self.tf_cru.value=""; self.tf_tel.value=""
         self.seg_tel.selected=["si"]; self.seg_hora.selected=["no"]
         self.tf_tel.disabled=False
-        self.dd_h.disabled=True; self.dd_m.disabled=True; self.dd_p.disabled=True
+        self.dd_h.disabled=False; self.dd_m.disabled=False; self.dd_p.disabled=False
+        self.dd_h.border_color=ACCENT2; self.dd_m.border_color=ACCENT2; self.dd_p.border_color=ACCENT2
+        self.dd_h.focused_border_color=ACCENT2; self.dd_m.focused_border_color=ACCENT2; self.dd_p.focused_border_color=ACCENT2
+        self.dd_h.color=TXT_MUTED; self.dd_m.color=TXT_MUTED; self.dd_p.color=TXT_MUTED
         self.dd_h.value="12"; self.dd_m.value="00"; self.dd_p.value="PM"
 
     def build(self):
@@ -253,8 +280,8 @@ class FormularioCliente:
                 ft.Row([lbl("Cruces:"),self.tf_cru],spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([lbl("Teléfono:"),self.seg_tel,self.tf_tel],spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([lbl("Hora:"),self.seg_hora,
-                    ft.Column([self.dd_h,ft.Text("Hora",size=10,color=TXT,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
-                    ft.Column([self.dd_m,ft.Text("Minutos",size=10,color=TXT,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
+                    ft.Column([self.dd_h,ft.Text("Hora",size=11,color=ACCENT,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
+                    ft.Column([self.dd_m,ft.Text("Minutos",size=11,color=ACCENT,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
                     self.dd_p],
                        spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ],spacing=8),bgcolor=BG_CARD,border_radius=10,padding=12)
@@ -264,28 +291,100 @@ class MenuProductos:
     def __init__(self,on_product_click):
         self.on_click=on_product_click
 
-    def _card(self,name,price,color):
+    def _subtitle(self,categoria,name):
+        if categoria=="Comida":
+            return {
+                "Torta":"Opciones: Carne, Buche, Lengua, Mixta",
+                "Taco Dorado":"Opciones: Papa, Frijol, Requesón, Picadillo",
+                "Taco c/Carne":"Opciones: Tipo de taco y carne",
+                "Kilo de Carne":"Opciones: Tipo de carne y cantidad",
+            }.get(name,"")
+        if categoria=="Bebidas":
+            return {
+                "Refresco":"Opciones: Coca, Fanta, Manzana, Sprite, Jamaica, Horchata",
+                "Cerveza":"Opciones: Clara u Obscura",
+                "Agua Fresca 500ml":"Opciones: Jamaica u Horchata",
+                "Agua Fresca 1LT":"Opciones: Jamaica u Horchata",
+                "Caguama":"Presentación: Caguama",
+            }.get(name,"")
+        if categoria=="Paquetes":
+            return {
+                "Paquete #1":"Incluye: Torta, Tacos y Bebida",
+                "Paquete #2":"Incluye: Torta, Tacos y Bebida",
+            }.get(name,"")
+        return ""
+
+    def _card(self,name,price,color,width,height,name_size,price_size,subtitle,subtitle_size):
         return ft.Container(
             content=ft.Column([
-                ft.Text(name,size=13,weight=ft.FontWeight.BOLD,color=TXT,text_align=ft.TextAlign.CENTER),
-                ft.Text(f"${price}",size=17,weight=ft.FontWeight.W_900,color=GOLD,text_align=ft.TextAlign.CENTER),
-            ],alignment=ft.MainAxisAlignment.CENTER,horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=3),
-            width=130,height=75,bgcolor=color,border_radius=12,alignment=ft.Alignment(0,0),
+                ft.Text(name,size=name_size,weight=ft.FontWeight.BOLD,color=TXT,text_align=ft.TextAlign.CENTER),
+                ft.Text(f"${price}",size=price_size,weight=ft.FontWeight.W_900,color=GOLD,text_align=ft.TextAlign.CENTER),
+                ft.Text(
+                    subtitle,
+                    size=subtitle_size,
+                    color=TXT_MUTED,
+                    text_align=ft.TextAlign.CENTER,
+                    max_lines=2,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ) if subtitle else ft.Container(height=0),
+            ],alignment=ft.MainAxisAlignment.CENTER,horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=4),
+            width=width,height=height,bgcolor=color,border_radius=12,alignment=ft.Alignment(0,0),
             on_click=lambda _,n=name,p=price: self.on_click(n,p),ink=True,
             shadow=ft.BoxShadow(spread_radius=1,blur_radius=6,color=ft.Colors.with_opacity(0.25,"black"),offset=ft.Offset(0,2)))
 
-    def _grid(self,items,color):
-        g=ft.GridView(runs_count=3,max_extent=150,child_aspect_ratio=1.7,spacing=8,run_spacing=8,padding=8,expand=True)
-        for n,p in items: g.controls.append(self._card(n,p,color))
+    def _grid(self,categoria,items,color,runs_count,card_w,card_h,name_size,price_size,subtitle_size,ratio):
+        g=ft.GridView(
+            runs_count=runs_count,
+            child_aspect_ratio=ratio,
+            spacing=10,
+            run_spacing=10,
+            padding=10,
+            expand=True,
+        )
+        for n,p in items:
+            g.controls.append(
+                self._card(
+                    n,
+                    p,
+                    color,
+                    card_w,
+                    card_h,
+                    name_size,
+                    price_size,
+                    self._subtitle(categoria,n),
+                    subtitle_size,
+                )
+            )
         return g
 
     def build(self):
         cats=list(MENU.keys())
+        cfg={
+            "Comida":{"runs":2,"w":220,"h":125,"name":18,"price":24,"sub":11,"ratio":1.75},
+            "Paquetes":{"runs":3,"w":170,"h":110,"name":16,"price":21,"sub":10,"ratio":1.45},
+            "Bebidas":{"runs":2,"w":198,"h":112,"name":18,"price":23,"sub":11,"ratio":1.7},
+        }
         return ft.Tabs(
             content=ft.Column([
                 ft.TabBar(tabs=[ft.Tab(label=f"{'🍔📦🥤'[i]} {c}") for i,c in enumerate(cats)],
                           indicator_color=ACCENT,label_color=GOLD,unselected_label_color=TXT),
-                ft.TabBarView(controls=[self._grid(MENU[c],GRID_COLORS[c]) for c in cats],expand=True),
+                ft.TabBarView(
+                    controls=[
+                        self._grid(
+                            c,
+                            MENU[c],
+                            GRID_COLORS[c],
+                            cfg[c]["runs"],
+                            cfg[c]["w"],
+                            cfg[c]["h"],
+                            cfg[c]["name"],
+                            cfg[c]["price"],
+                            cfg[c]["sub"],
+                            cfg[c]["ratio"],
+                        ) for c in cats
+                    ],
+                    expand=True,
+                ),
             ],expand=True),length=len(cats),selected_index=0,expand=True)
 
 # Colores por bebida
@@ -301,7 +400,7 @@ class ItemDialog:
         for opt in options:
             c=ft.Container(
                 content=ft.Text(opt,color=TXT,size=16,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER),
-                bgcolor="#2d3a5e",border=ft.Border.all(1,ACCENT2),border_radius=10,
+                bgcolor=BG_ITEM,border=ft.Border.all(1,ACCENT2),border_radius=10,
                 width=145,height=50,alignment=ft.Alignment(0,0),data=opt,ink=True,
                 on_click=lambda e,s=selected,mx=max_sel: self._toggle(e,s,mx))
             btns.append(c)
@@ -311,7 +410,7 @@ class ItemDialog:
         opt=e.control.data
         if opt in selected:
             selected.discard(opt)
-            e.control.bgcolor="#2d3a5e"; e.control.border=ft.Border.all(1,ACCENT2)
+            e.control.bgcolor=BG_ITEM; e.control.border=ft.Border.all(1,ACCENT2)
         else:
             if max_sel and len(selected)>=max_sel: return
             selected.add(opt)
@@ -327,7 +426,7 @@ class ItemDialog:
             qty[0]+=1; txt.value=str(qty[0]); self.page.update()
         row=ft.Row([
             ft.IconButton(icon=ft.Icons.REMOVE_CIRCLE,icon_color=ACCENT,icon_size=30,on_click=minus),
-            ft.Container(content=txt,bgcolor="#1e2a4a",border_radius=8,padding=ft.Padding(12,6,12,6),border=ft.Border.all(1,ACCENT2)),
+            ft.Container(content=txt,bgcolor=BG_ITEM,border_radius=8,padding=ft.Padding(12,6,12,6),border=ft.Border.all(1,ACCENT2)),
             ft.IconButton(icon=ft.Icons.ADD_CIRCLE,icon_color=GREEN,icon_size=30,on_click=plus),
         ],alignment=ft.MainAxisAlignment.CENTER)
         return row,qty
@@ -339,7 +438,7 @@ class ItemDialog:
     def _drink_btns(self,options,selected,max_sel=None):
         btns=[]
         for opt in options:
-            bg=DRINK_COLORS.get(opt,"#2d3a5e")
+            bg=DRINK_COLORS.get(opt,BG_ITEM)
             c=ft.Container(
                 content=ft.Text(opt,color="white",size=14,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER),
                 bgcolor=bg,border=ft.Border.all(1,ACCENT2),border_radius=10,
@@ -526,7 +625,18 @@ class ResumenPedido:
         self.dd_plato=ft.Dropdown(label="Plato actual",dense=True,text_size=13,
                                   on_select=self._on_plato_change,expand=True,
                                   border_color=ACCENT2,color=TXT)
-        self.lv=ft.ListView(expand=True,spacing=4,padding=5)
+        self.lv_content=ft.Column(
+            spacing=4,
+            tight=True,
+            scroll=ft.ScrollMode.AUTO,
+            alignment=ft.MainAxisAlignment.START,
+        )
+        self.lv=ft.Container(
+            content=self.lv_content,
+            expand=True,
+            padding=0,
+            alignment=ft.Alignment(-1, -1),
+        )
         self.txt_total=ft.Text("Total: $0",size=20,weight=ft.FontWeight.BOLD,color=GOLD,text_align=ft.TextAlign.CENTER)
         self._editing_idx=-1  # plato being renamed
 
@@ -535,7 +645,7 @@ class ResumenPedido:
         if v is not None and v.isdigit(): self.state.activo=int(v)
 
     def refresh(self):
-        self._drag_map.clear(); self.lv.controls.clear()
+        self._drag_map.clear(); self.lv_content.controls.clear()
         # Refresh dropdown
         self.dd_plato.options=[ft.DropdownOption(key=str(i),text=p.nombre) for i,p in enumerate(self.state.platos)]
         if 0<=self.state.activo<len(self.state.platos): self.dd_plato.value=str(self.state.activo)
@@ -560,7 +670,7 @@ class ResumenPedido:
                         ft.Text(f'${sub}',color=GOLD,weight=ft.FontWeight.BOLD,size=12),
                         ft.IconButton(icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,icon_color=ACCENT,icon_size=14,
                                       data=f"{pi}:{ii}",on_click=self._quitar,padding=0),
-                    ]),bgcolor="#1e2a4a",border_radius=5,padding=ft.Padding(6,4,6,4))
+                    ]),bgcolor=BG_ITEM,border_radius=5,padding=ft.Padding(6,4,6,4))
                 draggable=ft.Draggable(content=item_row,group="items",data=dk)
                 items_col.controls.append(draggable)
 
@@ -581,14 +691,19 @@ class ResumenPedido:
 
             plato_box=ft.Container(
                 content=ft.Column([header,items_col],spacing=4),
-                bgcolor="#111a30",border_radius=8,padding=8,
+                bgcolor=BG_PANEL,border_radius=8,padding=8,
                 margin=ft.Margin(bottom=6),
                 border=ft.Border.all(1,ACCENT2))
 
-            target=ft.DragTarget(content=plato_box,group="items",data=str(pi),
-                                  on_accept=self._on_drop,
-                                  on_will_accept=self._on_will)
-            self.lv.controls.append(target)
+            target=ft.DragTarget(
+                content=ft.Container(content=plato_box,padding=0,margin=0,alignment=ft.Alignment(-1,-1)),
+                group="items",
+                data=str(pi),
+                on_accept=self._on_drop,
+                on_will_accept=self._on_will,
+                expand=False,
+            )
+            self.lv_content.controls.append(target)
 
         self.txt_total.value=f"Total: ${self.state.total()}"
         self.page.update()
@@ -627,12 +742,12 @@ class ResumenPedido:
     def build(self):
         return ft.Container(
             content=ft.Column([
-                ft.Text("🧾 Resumen del pedido",size=18,weight=ft.FontWeight.W_900,color=GOLD,text_align=ft.TextAlign.CENTER),
-                self.dd_plato,
+                ft.Text("🧾 Resumen del pedido",size=24,weight=ft.FontWeight.W_900,color=GOLD,text_align=ft.TextAlign.CENTER),
+                ft.Row([self.dd_plato],spacing=0),
                 self.lv,
                 ft.Divider(color=ACCENT2,height=1),
                 ft.Container(content=self.txt_total,alignment=ft.Alignment(0,0),padding=6),
-            ],expand=True,spacing=4),
+            ],expand=True,spacing=2),
             expand=5,bgcolor=BG_CARD,border_radius=12,padding=10,
             shadow=ft.BoxShadow(spread_radius=1,blur_radius=10,color=ft.Colors.with_opacity(0.35,"black"),offset=ft.Offset(0,3)))
 
@@ -684,7 +799,7 @@ class HistorialDialog:
                         ft.Text(pl['nombre'],color=ACCENT,size=11,weight=ft.FontWeight.BOLD),
                         *[ft.Column([
                             ft.Text(f"  {it['qty']}x {it['name']}  ${it['price']*it['qty']}",color=GOLD,size=12,weight=ft.FontWeight.W_500),
-                            ft.Text(f"    → {it['variant']}",color="#aab",size=10,italic=True) if it.get('variant') else ft.Container(height=0),
+                            ft.Text(f"    → {it['variant']}",color=TXT_MUTED,size=10,italic=True) if it.get('variant') else ft.Container(height=0),
                         ],spacing=1) for it in pl.get("items",[])],
                     ],spacing=1),padding=ft.Padding(0,2,0,2),
                 ) for pl in p.get("platos",[])],
@@ -693,12 +808,12 @@ class HistorialDialog:
                 ft.Row([
                     ft.Text(f"Total: ${p.get('total',0)}",color=GREEN,weight=ft.FontWeight.BOLD,size=13),
                     ft.Row([
-                        ft.Text(p.get('hora',''),color="#666",size=10),
+                        ft.Text(p.get('hora',''),color=TXT_MUTED,size=10),
                         ft.IconButton(icon=ft.Icons.PRINT,icon_color=GREEN,icon_size=14,
                                       on_click=reimprimir,padding=0,tooltip="Reimprimir"),
                     ],spacing=2),
                 ],alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ],spacing=3),bgcolor="#1e2a4a",border_radius=8,padding=10,margin=ft.Margin(bottom=5))
+            ],spacing=3),bgcolor=BG_ITEM,border_radius=8,padding=10,margin=ft.Margin(bottom=5))
 
     def _build_column(self,titulo,pedidos):
         if not pedidos:
@@ -714,12 +829,13 @@ class HistorialDialog:
                 ft.Divider(color=ACCENT2,height=1),
                 ft.Container(content=lista,expand=True),
             ],expand=True),
-            expand=True,bgcolor="#111a30",border_radius=8,padding=8)
+            expand=True,bgcolor=BG_PANEL,border_radius=8,padding=8)
 
     def mostrar(self):
-        pedidos=cargar_pedidos()
-        con_hora=[p for p in pedidos if p.get("hora_especifica")]
-        sin_hora=[p for p in pedidos if not p.get("hora_especifica")]
+        hoy=datetime.now().strftime("%Y-%m-%d")
+        pedidos_hoy=[p for p in cargar_pedidos() if p.get("fecha")==hoy]
+        con_hora=[p for p in pedidos_hoy if p.get("hora_especifica")]
+        sin_hora=[p for p in pedidos_hoy if not p.get("hora_especifica")]
 
         content=ft.Row([
             self._build_column("🍽️ Sin hora",sin_hora),
@@ -739,7 +855,7 @@ def main(page: ft.Page):
     page.title="Punto de Venta — Tortas Susy"
     page.bgcolor=BG_DARK; page.padding=10
     page.window.width=1150; page.window.height=750
-    page.theme_mode=ft.ThemeMode.DARK
+    page.theme_mode=ft.ThemeMode.LIGHT
     init_db()
 
     state=PedidoState()
@@ -808,8 +924,8 @@ def main(page: ft.Page):
             ft.Button("🗑️ Limpiar",on_click=on_limpiar,bgcolor=ACCENT,color="white",style=bs,height=36,expand=True),
         ],spacing=6),
         ft.Row([
-            ft.Button("➕ Plato",on_click=on_crear_plato,bgcolor=ACCENT2,color="white",style=bs,height=36,expand=True),
-            ft.Button("📋 Lista",on_click=on_lista,bgcolor="#2d3a5e",color="white",style=bs,height=36,expand=True),
+            ft.Button("➕ Plato",on_click=on_crear_plato,bgcolor=ACCENT2,color=TXT,style=bs,height=36,expand=True),
+            ft.Button("📋 Lista",on_click=on_lista,bgcolor=BG_PANEL,color=TXT,style=bs,height=36,expand=True),
         ],spacing=6),
     ],spacing=4)
 
