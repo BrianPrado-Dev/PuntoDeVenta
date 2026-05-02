@@ -5,7 +5,10 @@ Flet 0.84+ | SQLite3 | JSON | OOP
 import flet as ft
 import sqlite3, json, os, copy
 import asyncio
+import ssl
 from datetime import datetime
+
+ssl._create_default_https_context = ssl._create_unverified_context
 
 try:
     import win32print
