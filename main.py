@@ -8,9 +8,17 @@ from datetime import datetime
 
 try:
     import win32print
-    WIN32_AVAILABLE = True
+    WIN32_PRINT_AVAILABLE = True
 except ImportError:
-    WIN32_AVAILABLE = False
+    WIN32_PRINT_AVAILABLE = False
+
+try:
+    import win32ui, win32con
+    WIN32_GDI_AVAILABLE = True
+except ImportError:
+    WIN32_GDI_AVAILABLE = False
+
+WIN32_AVAILABLE = WIN32_PRINT_AVAILABLE
 
 try:
     import winsound
@@ -38,6 +46,17 @@ BG_DARK="#F2E6D3"; BG_CARD="#FFFDF8"; ACCENT="#B33939"
 ACCENT2="#D8C1A0"; TXT="#4A2A22"; GREEN="#16A34A"; GOLD="#8F2D2D"
 ERROR_RED="#8B1E1E"
 BG_PANEL="#FBF4E8"; BG_ITEM="#F3E6D3"; TXT_MUTED="#8A6F5A"; INPUT_BG="#FFFFFF"
+
+TICKET_TEXT_WIDTH = 32
+PRODUCTO_ANCHO = 14
+CANTIDAD_ANCHO = 6
+PRECIO_ANCHO = 10
+TICKET_FONT_NAME = "Arial"
+TICKET_FONT_HEIGHT = 30
+TICKET_FONT_WEIGHT = win32con.FW_NORMAL if WIN32_GDI_AVAILABLE else 400
+TICKET_MARGIN_X = 20
+TICKET_MARGIN_Y = 20
+TICKET_LINE_STEP = 30
 
 def play_notification_sound(kind: str):
     if not WINSOUND_AVAILABLE:
@@ -81,33 +100,67 @@ def guardar_pedido(p):
     with open(PEDIDOS_PATH,"w",encoding="utf-8") as f:
         json.dump(ps,f,ensure_ascii=False,indent=2)
 
-# ─── Ticket 25 chars ───
-def wrap(t,mx=25):
-    ws=t.split(); ls=[]; cur=""
+# ─── Ticket 32 chars ───
+def centrar(texto, ancho=TICKET_TEXT_WIDTH):
+    return str(texto or "")[:ancho].center(ancho)
+
+def dividir_texto(texto, ancho_max=TICKET_TEXT_WIDTH):
+    ws=str(texto or "").split(); ls=[]; cur=""
     for w in ws:
-        if len(w)>mx:
+        if len(w)>ancho_max:
             if cur: ls.append(cur); cur=""
-            while len(w)>mx: ls.append(w[:mx]); w=w[mx:]
+            while len(w)>ancho_max: ls.append(w[:ancho_max]); w=w[ancho_max:]
             if w: cur=w
         elif not cur: cur=w
-        elif len(cur)+1+len(w)<=mx: cur+=" "+w
+        elif len(cur)+1+len(w)<=ancho_max: cur+=" "+w
         else: ls.append(cur); cur=w
     if cur: ls.append(cur)
-    return "\n".join(ls)
+    return ls or [""]
+
+def dividir_campo(campo, valor, ancho_max=TICKET_TEXT_WIDTH):
+    return dividir_texto(f"{campo}: {valor}", ancho_max=ancho_max)
+
+def formatear_moneda(valor):
+    try:
+        n=float(valor)
+    except (TypeError, ValueError):
+        return f"${valor}"
+    if n.is_integer(): return f"${int(n)}"
+    return f"${n:.2f}"
+
+def formatear_renglon_producto(item):
+    nombre=str(item.get("name",""))[:PRODUCTO_ANCHO].ljust(PRODUCTO_ANCHO)
+    qty=item.get("qty",0)
+    if isinstance(qty,float) and qty.is_integer(): qty=int(qty)
+    cantidad=str(qty).center(CANTIDAD_ANCHO)
+    try:
+        subtotal=float(item.get("price",0))*float(item.get("qty",0))
+    except (TypeError, ValueError):
+        subtotal=0
+    precio=formatear_moneda(subtotal).rjust(PRECIO_ANCHO)
+    return f"{nombre}{cantidad}{precio}"
 
 def generar_ticket_impresion(ped):
-    s="="*25; t=[wrap("TORTAS SUSY"),s,wrap(f"Fecha: {ped.get('fecha','')}"),wrap(f"Hora: {ped.get('hora','')}"),s]
+    s="="*TICKET_TEXT_WIDTH
+    t=[centrar("TORTAS SUSY"),s]
+    t.extend(dividir_campo("Fecha",ped.get("fecha","")))
+    t.extend(dividir_campo("Hora",ped.get("hora","")))
+    t.append(s)
     for l,k in [("Tel","telefono"),("Dom","domicilio"),("Cruces","cruces"),("Hr esp","hora_especifica")]:
         v=ped.get(k,"")
-        if v: t.append(wrap(f"{l}: {v}"))
-    t+=[s,wrap("PEDIDO:"),"-"*25]
+        if v: t.extend(dividir_campo(l,v))
+    t+=[s,centrar("PEDIDO"),"-"*TICKET_TEXT_WIDTH,
+        f"{'Producto'.ljust(PRODUCTO_ANCHO)}{'Cant'.center(CANTIDAD_ANCHO)}{'Precio'.rjust(PRECIO_ANCHO)}",
+        "-"*TICKET_TEXT_WIDTH]
     for pl in ped.get("platos",[]):
-        t.append(wrap(f"-- {pl['nombre']} --"))
+        t.extend(dividir_texto(f"[{pl['nombre']}]"))
         for it in pl.get("items",[]):
-            t.append(wrap(f"{it['qty']}x {it['name']} ${it['price']*it['qty']}"))
+            t.append(formatear_renglon_producto(it))
             vr=it.get('variant','')
-            if vr: t.append(wrap(f"  -> {vr}"))
-    t+=[s,wrap(f"TOTAL: ${ped.get('total',0)}"),s,wrap("Gracias por su compra!"),"\n\n\n"]
+            if vr: t.extend(dividir_texto(f"-> {vr}"))
+    total_txt=formatear_moneda(ped.get("total",0))
+    t+=[s,f"{'TOTAL:'.ljust(TICKET_TEXT_WIDTH-PRECIO_ANCHO)}{total_txt.rjust(PRECIO_ANCHO)}",
+        s,centrar("Gracias por su compra!"),"","",""]
     return "\n".join(t)
 
 
@@ -118,28 +171,59 @@ class TicketPrinter:
     """Gestiona la impresión física en impresora térmica vía win32print."""
     def __init__(self):
         self.printer_name = None
-        if WIN32_AVAILABLE:
+        if WIN32_PRINT_AVAILABLE:
             try:
                 self.printer_name = win32print.GetDefaultPrinter()
             except Exception:
                 self.printer_name = None
 
+    def _imprimir_raw(self, ticket_text: str):
+        hprinter=win32print.OpenPrinter(self.printer_name)
+        try:
+            win32print.StartDocPrinter(hprinter, 1, ("Ticket POS", None, "RAW"))
+            win32print.StartPagePrinter(hprinter)
+            win32print.WritePrinter(hprinter, ticket_text.encode("utf-8"))
+            win32print.EndPagePrinter(hprinter)
+            win32print.EndDocPrinter(hprinter)
+        finally:
+            win32print.ClosePrinter(hprinter)
+
+    def _imprimir_gdi(self, ticket_text: str):
+        dc=win32ui.CreateDC()
+        dc.CreatePrinterDC(self.printer_name)
+        font=win32ui.CreateFont({"name":TICKET_FONT_NAME,"height":TICKET_FONT_HEIGHT,"weight":TICKET_FONT_WEIGHT})
+        old_font=None
+        try:
+            dc.StartDoc("Ticket POS")
+            dc.StartPage()
+            old_font=dc.SelectObject(font)
+            y=TICKET_MARGIN_Y
+            limite=dc.GetDeviceCaps(win32con.VERTRES)-TICKET_MARGIN_Y
+            for line in ticket_text.split("\n"):
+                if y>limite:
+                    dc.EndPage()
+                    dc.StartPage()
+                    dc.SelectObject(font)
+                    y=TICKET_MARGIN_Y
+                dc.TextOut(TICKET_MARGIN_X,y,line)
+                y+=TICKET_LINE_STEP
+            dc.EndPage()
+            dc.EndDoc()
+        finally:
+            if old_font: dc.SelectObject(old_font)
+            dc.DeleteDC()
+
     def imprimir(self, ticket_text: str) -> tuple[bool, str]:
         """Envía el ticket a la impresora. Retorna (éxito, mensaje)."""
-        if not WIN32_AVAILABLE:
+        if not WIN32_PRINT_AVAILABLE:
             return False, "win32print no disponible (pywin32 no instalado)"
         if not self.printer_name:
             return False, "No se detectó impresora por defecto"
         try:
-            hprinter = win32print.OpenPrinter(self.printer_name)
-            try:
-                win32print.StartDocPrinter(hprinter, 1, ("Ticket POS", None, "RAW"))
-                win32print.StartPagePrinter(hprinter)
-                win32print.WritePrinter(hprinter, ticket_text.encode("utf-8"))
-                win32print.EndPagePrinter(hprinter)
-                win32print.EndDocPrinter(hprinter)
-            finally:
-                win32print.ClosePrinter(hprinter)
+            if WIN32_GDI_AVAILABLE:
+                self._imprimir_gdi(ticket_text)
+            else:
+                self._imprimir_raw(ticket_text)
             return True, "Ticket enviado a impresora"
         except Exception as ex:
             return False, f"Error al imprimir: {ex}"
