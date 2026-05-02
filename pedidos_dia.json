@@ -1,0 +1,30 @@
+[
+  {
+    "fecha": "2026-05-02",
+    "hora": "09:15:18",
+    "telefono": "3310968903",
+    "domicilio": "conti - lulu",
+    "cruces": "1",
+    "hora_especifica": "12:00 PM",
+    "platos": [
+      {
+        "nombre": "Plato 1",
+        "items": [
+          {
+            "name": "caca",
+            "price": 22,
+            "qty": 1,
+            "variant": ""
+          },
+          {
+            "name": "Torta",
+            "price": 60,
+            "qty": 1,
+            "variant": "Carne"
+          }
+        ]
+      }
+    ],
+    "total": 82
+  }
+]

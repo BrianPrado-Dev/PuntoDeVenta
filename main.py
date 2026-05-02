@@ -4,6 +4,7 @@ Flet 0.84+ | SQLite3 | JSON | OOP
 """
 import flet as ft
 import sqlite3, json, os, copy
+import asyncio
 from datetime import datetime
 
 try:
@@ -28,15 +29,17 @@ except ImportError:
 
 DB_PATH = "clientes.db"
 PEDIDOS_PATH = "pedidos_dia.json"
+PEDIDOS_TXT_TEMPLATE = "pedidos_{fecha}.txt"
 
 MENU = {
-    "Comida": [("Torta",60),("Taco Dorado",10),("Taco c/Carne",25),("Kilo de Carne",300)],
+    "Comida": [("Torta",60),("Torta Mini",30),("Taco Dorado",10),("Taco c/Carne",25),("Kilo de Carne",300),("Crear Producto",0)],
     "Paquetes": [("Paquete #1",90),("Paquete #2",95),("Paquete #3",220),("Paquete #4",345),("Paquete #5",680)],
     "Bebidas": [("Refresco",30),("Cerveza",25),("Agua Fresca 500ml",15),("Agua Fresca 1LT",25),("Caguama",70)],
 }
 
 MEAT_TYPES = ["Carne","Buche","Lengua","Mixta"]
 TACO_TYPES = ["Papa","Frijol","Requesón","Picadillo"]
+REFRESCO_TYPES = ["Coca","Fanta","Manzana","Sprite"]
 DRINK_TYPES = ["Coca","Fanta","Manzana","Sprite","Jamaica","Horchata"]
 BEER_TYPES = ["Clara","Obscura"]
 AGUA_TYPES = ["Jamaica","Horchata"]
@@ -75,8 +78,11 @@ def play_notification_sound(kind: str):
 # ─── DB ───
 def init_db():
     c=sqlite3.connect(DB_PATH); c.execute(
-        "CREATE TABLE IF NOT EXISTS clientes(telefono TEXT PRIMARY KEY,usuario TEXT,domicilio TEXT,cruces TEXT)"
+        "CREATE TABLE IF NOT EXISTS clientes(telefono TEXT PRIMARY KEY,domicilio TEXT,cruces TEXT)"
     ); c.commit(); c.close()
+
+def _columnas_clientes(cnx):
+    return {r[1] for r in cnx.execute("PRAGMA table_info(clientes)").fetchall()}
 
 def buscar_cliente(tel):
     c=sqlite3.connect(DB_PATH); r=c.execute(
@@ -84,21 +90,79 @@ def buscar_cliente(tel):
     ).fetchone(); c.close(); return r
 
 def guardar_cliente(tel,dom,cru):
-    c=sqlite3.connect(DB_PATH); c.execute(
-        "INSERT OR REPLACE INTO clientes(telefono,usuario,domicilio,cruces) VALUES(?,?,?,?)",
-        (tel,"",dom,cru)); c.commit(); c.close()
+    c=sqlite3.connect(DB_PATH)
+    cols=_columnas_clientes(c)
+    if "usuario" in cols:
+        c.execute(
+            "INSERT OR REPLACE INTO clientes(telefono,usuario,domicilio,cruces) VALUES(?,?,?,?)",
+            (tel,"",dom,cru),
+        )
+    else:
+        c.execute(
+            "INSERT OR REPLACE INTO clientes(telefono,domicilio,cruces) VALUES(?,?,?)",
+            (tel,dom,cru),
+        )
+    c.commit(); c.close()
 
 # ─── JSON ───
-def cargar_pedidos():
-    if not os.path.exists(PEDIDOS_PATH): return []
+def _leer_pedidos_json():
+    if not os.path.exists(PEDIDOS_PATH):
+        return []
     with open(PEDIDOS_PATH,"r",encoding="utf-8") as f:
-        try: return json.load(f)
-        except: return []
+        try:
+            data=json.load(f)
+        except json.JSONDecodeError:
+            return []
+    return data if isinstance(data,list) else []
+
+def _guardar_pedidos_json(pedidos):
+    with open(PEDIDOS_PATH,"w",encoding="utf-8") as f:
+        json.dump(pedidos,f,ensure_ascii=False,indent=2)
+
+def _ruta_pedidos_txt(fecha: str):
+    return PEDIDOS_TXT_TEMPLATE.format(fecha=fecha)
+
+def _archivar_pedidos_txt(fecha: str, pedidos: list[dict]):
+    if not pedidos:
+        return
+    ruta=_ruta_pedidos_txt(fecha)
+    with open(ruta,"a",encoding="utf-8") as f:
+        for p in pedidos:
+            f.write(generar_ticket_impresion(p))
+            f.write("\n"+"-"*TICKET_TEXT_WIDTH+"\n")
+
+def cargar_pedidos():
+    pedidos=_leer_pedidos_json()
+    if not pedidos:
+        return []
+    hoy=datetime.now().strftime("%Y-%m-%d")
+    pedidos_hoy=[]
+    pedidos_historicos: dict[str, list[dict]]={}
+    for p in pedidos:
+        fecha=str(p.get("fecha","")).strip()
+        if fecha and fecha!=hoy:
+            pedidos_historicos.setdefault(fecha,[]).append(p)
+        else:
+            pedidos_hoy.append(p)
+    for fecha,pedidos_fecha in pedidos_historicos.items():
+        _archivar_pedidos_txt(fecha,pedidos_fecha)
+    if pedidos_historicos:
+        _guardar_pedidos_json(pedidos_hoy)
+    return pedidos_hoy
 
 def guardar_pedido(p):
-    ps=cargar_pedidos(); ps.append(p)
-    with open(PEDIDOS_PATH,"w",encoding="utf-8") as f:
-        json.dump(ps,f,ensure_ascii=False,indent=2)
+    ps=cargar_pedidos()
+    ps.append(p)
+    _guardar_pedidos_json(ps)
+
+def eliminar_pedido(pedido):
+    pedidos_hoy=cargar_pedidos()
+    for i,p in enumerate(pedidos_hoy):
+        if p==pedido:
+            pedidos_hoy.pop(i)
+            _guardar_pedidos_json(pedidos_hoy)
+            return True
+    return False
 
 # ─── Ticket 32 chars ───
 def centrar(texto, ancho=TICKET_TEXT_WIDTH):
@@ -272,6 +336,22 @@ class PedidoState:
         dst.items.append(item)
     def total(self): return sum(p.total() for p in self.platos)
     def limpiar(self): self.platos.clear(); self.activo=-1; Plato._n=0; self.cli_existe=False
+    def cargar_desde_pedido(self,pedido):
+        self.limpiar()
+        for pd in pedido.get("platos",[]):
+            nombre=str(pd.get("nombre","")).strip() or f"Plato {len(self.platos)+1}"
+            items=[]
+            for it in pd.get("items",[]):
+                items.append({
+                    "name":it.get("name",""),
+                    "price":it.get("price",0),
+                    "qty":it.get("qty",1),
+                    "variant":it.get("variant",""),
+                })
+            self.platos.append(Plato(nombre,items))
+        if self.platos:
+            self.activo=0
+            Plato._n=len(self.platos)
 
 # ═══════════════════════════════════════
 #  UI COMPONENTS
@@ -355,14 +435,66 @@ class FormularioCliente:
         self.dd_h.color=TXT_MUTED; self.dd_m.color=TXT_MUTED; self.dd_p.color=TXT_MUTED
         self.dd_h.value="12"; self.dd_m.value="00"; self.dd_p.value="PM"
 
+    def cargar_desde_pedido(self,pedido):
+        self.tf_dom.value=str(pedido.get("domicilio",""))
+        self.tf_cru.value=str(pedido.get("cruces",""))
+        tel=str(pedido.get("telefono","")).strip()
+        self.tf_tel.value=tel
+        if tel:
+            self.seg_tel.selected=["si"]
+            self.tf_tel.disabled=False
+        else:
+            self.seg_tel.selected=["no"]
+            self.tf_tel.disabled=True
+
+        hora=str(pedido.get("hora_especifica","")).strip()
+        if hora:
+            self.seg_hora.selected=["si"]
+            partes=hora.split()
+            if len(partes)==2 and ":" in partes[0]:
+                hh,mm=partes[0].split(":",1)
+                if hh and mm:
+                    self.dd_h.value=hh
+                    self.dd_m.value=mm
+                if partes[1] in ("AM","PM"):
+                    self.dd_p.value=partes[1]
+        else:
+            self.seg_hora.selected=["no"]
+            self.dd_h.value="12"; self.dd_m.value="00"; self.dd_p.value="PM"
+
+        off="no" in self.seg_hora.selected
+        for dd in (self.dd_h,self.dd_m,self.dd_p):
+            dd.disabled=False
+            dd.border_color=ACCENT2 if off else ACCENT
+            dd.focused_border_color=ACCENT2 if off else ACCENT
+            dd.color=TXT_MUTED if off else TXT
+
     def build(self):
         lbl=lambda t: ft.Text(t,color=GOLD,size=13,weight=ft.FontWeight.BOLD)
         return ft.Container(
             content=ft.Column([
                 ft.Text("📝 Datos del cliente",size=14,weight=ft.FontWeight.BOLD,color=GOLD),
                 ft.Row([lbl("Domicilio:"),self.tf_dom],spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([
+                    lbl("Teléfono:"),
+                    self.seg_tel,
+                    self.tf_tel,
+                    ft.Text("⬅",size=18,color=ACCENT,weight=ft.FontWeight.BOLD),
+                    ft.Container(
+                        content=ft.Text("Primer paso",size=12,color=ACCENT,weight=ft.FontWeight.BOLD),
+                        bgcolor="#FFF9F2",
+                        border=ft.Border.all(1,ACCENT2),
+                        border_radius=18,
+                        shadow=ft.BoxShadow(
+                            spread_radius=0,
+                            blur_radius=4,
+                            color=ft.Colors.with_opacity(0.15,"black"),
+                            offset=ft.Offset(0,1),
+                        ),
+                        padding=ft.Padding(10,5,10,5),
+                    ),
+                ],spacing=6,vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([lbl("Cruces:"),self.tf_cru],spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Row([lbl("Teléfono:"),self.seg_tel,self.tf_tel],spacing=5,vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Row([lbl("Hora:"),self.seg_hora,
                     ft.Column([self.dd_h,ft.Text("Hora",size=11,color=ACCENT,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
                     ft.Column([self.dd_m,ft.Text("Minutos",size=11,color=ACCENT,weight=ft.FontWeight.BOLD,text_align=ft.TextAlign.CENTER)],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=2),
@@ -379,13 +511,15 @@ class MenuProductos:
         if categoria=="Comida":
             return {
                 "Torta":"Opciones: Carne, Buche, Lengua, Mixta",
+                "Torta Mini":"Opciones: Carne, Buche, Lengua, Mixta",
                 "Taco Dorado":"Opciones: Papa, Frijol, Requesón, Picadillo",
                 "Taco c/Carne":"Opciones: Tipo de taco y carne",
                 "Kilo de Carne":"Opciones: Tipo de carne y cantidad",
+                "Crear Producto":"Temporal: define nombre y precio",
             }.get(name,"")
         if categoria=="Bebidas":
             return {
-                "Refresco":"Opciones: Coca, Fanta, Manzana, Sprite, Jamaica, Horchata",
+                "Refresco":"Opciones: Coca, Fanta, Manzana, Sprite",
                 "Cerveza":"Opciones: Clara u Obscura",
                 "Agua Fresca 500ml":"Opciones: Jamaica u Horchata",
                 "Agua Fresca 1LT":"Opciones: Jamaica u Horchata",
@@ -444,9 +578,9 @@ class MenuProductos:
     def build(self):
         cats=list(MENU.keys())
         cfg={
-            "Comida":{"runs":2,"w":220,"h":125,"name":18,"price":24,"sub":11,"ratio":1.75},
-            "Paquetes":{"runs":3,"w":170,"h":110,"name":16,"price":21,"sub":10,"ratio":1.45},
-            "Bebidas":{"runs":2,"w":198,"h":112,"name":18,"price":23,"sub":11,"ratio":1.7},
+            "Comida":{"runs":3,"w":122,"h":79,"name":16,"price":21,"sub":10,"ratio":1.45},
+            "Paquetes":{"runs":3,"w":122,"h":79,"name":16,"price":21,"sub":10,"ratio":1.45},
+            "Bebidas":{"runs":3,"w":122,"h":79,"name":16,"price":21,"sub":10,"ratio":1.45},
         }
         return ft.Tabs(
             content=ft.Column([
@@ -562,16 +696,71 @@ class ItemDialog:
         ],alignment=ft.MainAxisAlignment.CENTER)
 
     def show(self,name,price):
-        if name=="Torta": self._show_meat(name,price,2)
+        if name in ("Torta","Torta Mini"): self._show_meat(name,price,2)
         elif name=="Taco Dorado": self._show_taco_dorado(name,price)
         elif name=="Taco c/Carne": self._show_taco_carne(name,price)
         elif name=="Kilo de Carne": self._show_kilo(name,price)
+        elif name=="Crear Producto": self._show_custom_product()
         elif name in ("Paquete #1","Paquete #2"): self._show_paq12(name,price)
         elif name in ("Paquete #3","Paquete #4","Paquete #5"): self._show_simple(name,price)
-        elif name=="Refresco": self._show_sel(name,price,"🥤","Tipo de refresco:",DRINK_TYPES)
+        elif name=="Refresco": self._show_sel(name,price,"🥤","Tipo de refresco:",REFRESCO_TYPES)
         elif name=="Cerveza": self._show_sel(name,price,"🍺","Tipo de cerveza:",BEER_TYPES)
         elif name in ("Agua Fresca 500ml","Agua Fresca 1LT"): self._show_sel(name,price,"🥤","Tipo de agua fresca:",AGUA_TYPES)
         elif name=="Caguama": self._show_simple(name,price)
+
+    def _show_custom_product(self):
+        mul,qty=self._multiplier()
+        tf_n=ft.TextField(
+            label="Nombre del producto",
+            dense=True,
+            width=300,
+            text_size=14,
+            color=TXT,
+            border_color=ACCENT2,
+            focused_border_color=ACCENT,
+        )
+        tf_p=ft.TextField(
+            label="Precio",
+            dense=True,
+            width=180,
+            text_size=14,
+            color=TXT,
+            border_color=ACCENT2,
+            focused_border_color=ACCENT,
+            suffix=ft.Text("$"),
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        dlg=ft.AlertDialog(bgcolor=BG_CARD,title=ft.Text("🧩 Crear Producto (Temporal)",color=GOLD,weight=ft.FontWeight.BOLD))
+        def accept(_):
+            nombre=tf_n.value.strip()
+            precio_txt=(tf_p.value or "").strip().replace(",",".")
+            if not nombre or not precio_txt:
+                self.page.snack_bar=ft.SnackBar(ft.Text("Captura nombre y precio",color="white"),bgcolor=ACCENT)
+                self.page.snack_bar.open=True; self.page.update()
+                return
+            try:
+                precio=float(precio_txt)
+            except ValueError:
+                self.page.snack_bar=ft.SnackBar(ft.Text("Precio inválido",color="white"),bgcolor=ACCENT)
+                self.page.snack_bar.open=True; self.page.update()
+                return
+            if precio<=0:
+                self.page.snack_bar=ft.SnackBar(ft.Text("El precio debe ser mayor a 0",color="white"),bgcolor=ACCENT)
+                self.page.snack_bar.open=True; self.page.update()
+                return
+            if precio.is_integer(): precio=int(precio)
+            self.on_accept(nombre,precio,qty[0],"")
+            self._close_dlg(dlg)
+        dlg.content=ft.Column([
+            ft.Text("Este producto se agrega solo al pedido actual.",color=TXT_MUTED,size=12,italic=True),
+            tf_n,
+            tf_p,
+            ft.Divider(color=ACCENT2),
+            ft.Text("Multiplicador:",color=GOLD,size=13,weight=ft.FontWeight.BOLD),
+            mul,
+            self._accept_btn(accept),
+        ],spacing=10,tight=True,width=360)
+        self.page.overlay.append(dlg); dlg.open=True; self.page.update()
 
     def _show_meat(self,name,price,max_sel):
         sel=set(); btns=self._toggle_btns(MEAT_TYPES,sel,max_sel=max_sel)
@@ -744,14 +933,14 @@ class ResumenPedido:
                 self._drag_map[dk]={"sp":pi,"si":ii}
                 sub=item["price"]*item["qty"]
                 vr=item.get("variant","")
-                name_col=ft.Column([ft.Text(item["name"],color=TXT,size=12,weight=ft.FontWeight.BOLD)],spacing=2)
-                if vr: name_col.controls.append(ft.Text(f"→ {vr}",color=GOLD,size=11,weight=ft.FontWeight.W_500))
+                name_col=ft.Column([ft.Text(item["name"],color=TXT,size=16,weight=ft.FontWeight.BOLD)],spacing=2)
+                if vr: name_col.controls.append(ft.Text(f"→ {vr}",color=GOLD,size=13,weight=ft.FontWeight.W_500))
                 item_row=ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.DRAG_INDICATOR,color=ACCENT2,size=14),
-                        ft.Text(f'{item["qty"]}x',color=ACCENT,weight=ft.FontWeight.BOLD,size=12),
+                        ft.Text(f'{item["qty"]}x',color=ACCENT,weight=ft.FontWeight.BOLD,size=15),
                         ft.Container(content=name_col,expand=True),
-                        ft.Text(f'${sub}',color=GOLD,weight=ft.FontWeight.BOLD,size=12),
+                        ft.Text(f'${sub}',color=GOLD,weight=ft.FontWeight.BOLD,size=16),
                         ft.IconButton(icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,icon_color=ACCENT,icon_size=14,
                                       data=f"{pi}:{ii}",on_click=self._quitar,padding=0),
                     ]),bgcolor=BG_ITEM,border_radius=5,padding=ft.Padding(6,4,6,4))
@@ -760,10 +949,10 @@ class ResumenPedido:
 
             # Plato header
             if self._editing_idx==pi:
-                name_ctl=ft.TextField(value=plato.nombre,dense=True,height=30,text_size=12,
-                                      color=TXT,width=120,on_submit=lambda e,idx=pi: self._rename_done(e,idx))
+                name_ctl=ft.TextField(value=plato.nombre,dense=True,height=36,text_size=17,
+                                      color=TXT,width=180,on_submit=lambda e,idx=pi: self._rename_done(e,idx))
             else:
-                name_ctl=ft.Text(plato.nombre,color=GOLD,weight=ft.FontWeight.BOLD,size=13)
+                name_ctl=ft.Text(plato.nombre,color=GOLD,weight=ft.FontWeight.BOLD,size=21)
 
             header=ft.Row([
                 name_ctl,ft.Row([
@@ -837,14 +1026,45 @@ class ResumenPedido:
 
 
 class HistorialDialog:
-    def __init__(self,page):
+    def __init__(self,page,on_edit_pedido,on_ticket_impreso):
         self.page=page
+        self.on_edit_pedido=on_edit_pedido
+        self.on_ticket_impreso=on_ticket_impreso
+        self._dlg=None
 
     def _mostrar_estado_impresion(self, ok: bool):
         txt = "Impresion Exitosa" if ok else "Error de impresion"
         bg = GREEN if ok else ERROR_RED
         self.page.snack_bar=ft.SnackBar(ft.Text(txt,color="white"),bgcolor=bg)
         self.page.snack_bar.open=True
+        self.page.update()
+
+    def _confirmar_edicion(self,pedido):
+        dlg=ft.AlertDialog(
+            title=ft.Text("⚠️ Advertencia",color=GOLD,weight=ft.FontWeight.BOLD),
+            content=ft.Text(
+                "Se quitará este pedido de la lista y se cargará en la pantalla principal para editarlo.",
+                color=TXT,
+            ),
+            bgcolor=BG_CARD,
+        )
+        def cancelar(_e):
+            dlg.open=False
+            self.page.update()
+        def aceptar(_e):
+            dlg.open=False
+            eliminado=eliminar_pedido(pedido)
+            if self._dlg:
+                self._dlg.open=False
+            self.page.update()
+            if eliminado:
+                self.on_edit_pedido(pedido)
+        dlg.actions=[
+            ft.TextButton("Cancelar",on_click=cancelar,style=ft.ButtonStyle(color=TXT_MUTED)),
+            ft.TextButton("Aceptar",on_click=aceptar,style=ft.ButtonStyle(color=ACCENT)),
+        ]
+        self.page.overlay.append(dlg)
+        dlg.open=True
         self.page.update()
 
     def _pedido_card(self,p):
@@ -860,7 +1080,12 @@ class HistorialDialog:
             print("\n"+ticket)
             ok,msg=printer.imprimir(ticket)
             play_notification_sound("print_success" if ok else "print_error")
+            if ok:
+                self.on_ticket_impreso()
             self._mostrar_estado_impresion(ok)
+
+        def editar(_e,ped=p):
+            self._confirmar_edicion(ped)
 
         return ft.Container(
             content=ft.Column([
@@ -894,7 +1119,8 @@ class HistorialDialog:
                     ft.Row([
                         ft.Text(p.get('hora',''),color=TXT_MUTED,size=10),
                         ft.IconButton(icon=ft.Icons.PRINT,icon_color=GREEN,icon_size=14,
-                                      on_click=reimprimir,padding=0,tooltip="Reimprimir"),
+                                      on_click=reimprimir,padding=0,tooltip="Imprimir"),
+                        ft.TextButton("Editar",on_click=editar,style=ft.ButtonStyle(color=ACCENT)),
                     ],spacing=2),
                 ],alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ],spacing=3),bgcolor=BG_ITEM,border_radius=8,padding=10,margin=ft.Margin(bottom=5))
@@ -927,9 +1153,9 @@ class HistorialDialog:
             self._build_column("⏰ Con hora",con_hora),
         ],expand=True,spacing=8,height=420,width=700)
 
-        dlg=ft.AlertDialog(title=ft.Text("📋 Pedidos del día",color=GOLD,weight=ft.FontWeight.BOLD),
-                           content=content,bgcolor=BG_CARD)
-        self.page.overlay.append(dlg); dlg.open=True; self.page.update()
+        self._dlg=ft.AlertDialog(title=ft.Text("📋 Pedidos del día",color=GOLD,weight=ft.FontWeight.BOLD),
+                                 content=content,bgcolor=BG_CARD)
+        self.page.overlay.append(self._dlg); self._dlg.open=True; self.page.update()
 
 
 # ═══════════════════════════════════════
@@ -941,16 +1167,61 @@ def main(page: ft.Page):
     page.window.width=1150; page.window.height=750
     page.theme_mode=ft.ThemeMode.LIGHT
     init_db()
+    cargar_pedidos()
 
     state=PedidoState()
     form=FormularioCliente(page,state)
     resumen=ResumenPedido(page,state)
-    historial=HistorialDialog(page)
+    ticket_impreso_overlay=ft.Stack(
+        visible=False,
+        expand=True,
+        controls=[
+            ft.Container(expand=True,bgcolor=ft.Colors.with_opacity(0.14,"black")),
+            ft.Container(
+                expand=True,
+                alignment=ft.Alignment(0,0),
+                content=ft.Container(
+                    content=ft.Text("Ticket Impreso",color="white",size=42,weight=ft.FontWeight.W_900,text_align=ft.TextAlign.CENTER),
+                    bgcolor=GREEN,
+                    border_radius=24,
+                    padding=ft.Padding(48,26,48,26),
+                    shadow=ft.BoxShadow(
+                        spread_radius=0,
+                        blur_radius=14,
+                        color=ft.Colors.with_opacity(0.35,"black"),
+                        offset=ft.Offset(0,4),
+                    ),
+                ),
+            ),
+        ],
+    )
+    page.overlay.append(ticket_impreso_overlay)
 
     def mostrar_mensaje_estado(texto: str, ok: bool):
         page.snack_bar=ft.SnackBar(ft.Text(texto,color="white"),bgcolor=GREEN if ok else ERROR_RED)
         page.snack_bar.open=True
         page.update()
+
+    async def _flash_ticket_impreso():
+        if ticket_impreso_overlay in page.overlay:
+            page.overlay.remove(ticket_impreso_overlay)
+        page.overlay.append(ticket_impreso_overlay)
+        ticket_impreso_overlay.visible=True
+        page.update()
+        await asyncio.sleep(1.2)
+        ticket_impreso_overlay.visible=False
+        page.update()
+
+    def mostrar_ticket_impreso():
+        page.run_task(_flash_ticket_impreso)
+
+    def cargar_pedido_para_editar(ped):
+        state.cargar_desde_pedido(ped)
+        form.cargar_desde_pedido(ped)
+        tel=form.get_tel()
+        state.cli_existe=bool(tel and buscar_cliente(tel))
+        resumen.refresh()
+        mostrar_mensaje_estado("Pedido cargado para edición",True)
 
     def on_item_accept(name,price,qty,variant):
         if not state.platos:
@@ -962,6 +1233,7 @@ def main(page: ft.Page):
             page.snack_bar.open=True; page.update()
 
     item_dlg=ItemDialog(page,on_item_accept)
+    historial=HistorialDialog(page,cargar_pedido_para_editar,mostrar_ticket_impreso)
 
     def on_product(name,price):
         if not state.platos:
@@ -981,13 +1253,15 @@ def main(page: ft.Page):
              "telefono":tel,"domicilio":form.tf_dom.value.strip(),"cruces":form.tf_cru.value.strip(),
              "hora_especifica":form.get_hora_str(),
              "platos":[p.to_dict() for p in state.platos],"total":state.total()}
-        # Siempre guardar primero (JSON + SQLite)
+        # Guardar pedido del día en JSON
         guardar_pedido(ped)
         ticket=generar_ticket_impresion(ped)
         print("\n"+ticket)  # Consola siempre
         # Intentar impresión física
         ok,msg=printer.imprimir(ticket)
         play_notification_sound("print_success" if ok else "print_error")
+        if ok:
+            mostrar_ticket_impreso()
         mostrar_mensaje_estado("Impresion Exitosa" if ok else "Error de impresion",ok)
 
     def on_limpiar(_e):
@@ -1004,8 +1278,8 @@ def main(page: ft.Page):
 
     btns=ft.Column([
         ft.Row([
-            ft.Button("🖨️ Imprimir",on_click=on_imprimir,bgcolor=GREEN,color="white",style=bs,height=36,expand=True),
             ft.Button("🗑️ Limpiar",on_click=on_limpiar,bgcolor=ACCENT,color="white",style=bs,height=36,expand=True),
+            ft.Button("🖨️ Imprimir",on_click=on_imprimir,bgcolor=GREEN,color="white",style=bs,height=36,expand=True),
         ],spacing=6),
         ft.Row([
             ft.Button("➕ Plato",on_click=on_crear_plato,bgcolor=ACCENT2,color=TXT,style=bs,height=36,expand=True),
