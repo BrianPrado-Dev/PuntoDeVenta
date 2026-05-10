@@ -76,6 +76,7 @@ PRODUCT_ICONS={
     "Agua Fresca 500ml":"\U0001F378",
     "Agua Fresca 1LT":"\U0001F378",
     "Caguama":"\U0001F37B",
+    "Envío":"\U0001F6F5",
 }
 CATEGORY_ICONS={"Comida":"\U0001F354","Paquetes":"\U0001F4E6","Bebidas":"\U0001F964"}
 
@@ -395,6 +396,10 @@ class Plato:
     def clonar(self):
         Plato._n+=1; return Plato(f"Plato {Plato._n}",copy.deepcopy(self.items))
 
+# Item por defecto que se agrega a todo pedido nuevo
+ENVIO_NAME = "Envío"
+ENVIO_PRICE = 15
+
 class PedidoState:
     def __init__(self):
         self.platos:list[Plato]=[]; self.activo=-1; self.cli_existe=False; Plato._n=0
@@ -418,6 +423,17 @@ class PedidoState:
         dst.items.append(item)
     def total(self): return sum(p.total() for p in self.platos)
     def limpiar(self): self.platos.clear(); self.activo=-1; Plato._n=0; self.cli_existe=False
+    def iniciar_nuevo_pedido(self):
+        """Reinicia el pedido y crea Plato 1 con el item Envío por defecto.
+
+        El item Envío es normal: se puede eliminar, mover de plato o cambiar de cantidad.
+        Solo aparece automáticamente al iniciar un pedido nuevo (no se agrega de nuevo
+        si el usuario lo elimina manualmente).
+        """
+        self.limpiar()
+        plato=self.crear_plato()
+        plato.agregar(ENVIO_NAME,ENVIO_PRICE,1,"")
+        return plato
     def cargar_desde_pedido(self,pedido):
         self.limpiar()
         for pd in pedido.get("platos",[]):
@@ -1797,6 +1813,7 @@ def main(page: ft.Page):
     cargar_pedidos()
 
     state=PedidoState()
+    state.iniciar_nuevo_pedido()  # arranca con Plato 1 + item Envío
     form=FormularioCliente(page,state)
     resumen=ResumenPedido(page,state)
     # Diálogo flash "Ticket Impreso" — usa AlertDialog para apilarse sobre cualquier
@@ -1982,7 +1999,7 @@ def main(page: ft.Page):
 
     def on_limpiar(_e):
         audio_mgr.play("limpiar")
-        state.limpiar(); form.limpiar(); resumen.refresh()
+        state.iniciar_nuevo_pedido(); form.limpiar(); resumen.refresh()
         mostrar_mensaje_estado("Limpiesa Exitosa",True)
 
     def on_crear_plato(_e):
@@ -2043,6 +2060,9 @@ def main(page: ft.Page):
         ),
         watermark,
     ],expand=True,spacing=2))
+
+    # Pintar el resumen inicial (Plato 1 con Envío) ya que el estado se inicializó antes de que la UI estuviera lista
+    resumen.refresh()
 
 if __name__=="__main__":
     ft.run(main)
