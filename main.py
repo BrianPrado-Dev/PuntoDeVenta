@@ -2,6 +2,7 @@
 Punto de Venta (POS) — Tortas Susy
 Flet 0.84+ | SQLite3 | JSON | OOP
 """
+
 import flet as ft
 import sqlite3, json, os, copy
 import asyncio
@@ -23,12 +24,6 @@ except ImportError:
     WIN32_GDI_AVAILABLE = False
 
 WIN32_AVAILABLE = WIN32_PRINT_AVAILABLE
-
-try:
-    import winsound
-    WINSOUND_AVAILABLE = True
-except ImportError:
-    WINSOUND_AVAILABLE = False
 
 DB_PATH = "clientes.db"
 PEDIDOS_PATH = "pedidos_dia.json"
@@ -95,19 +90,72 @@ TICKET_MARGIN_X = 20
 TICKET_MARGIN_Y = 20
 TICKET_LINE_STEP = 30
 
-def play_notification_sound(kind: str):
-    if not WINSOUND_AVAILABLE:
-        return
-    if kind=="print_success":
-        winsound.MessageBeep(winsound.MB_OK)
-    elif kind=="print_error":
-        winsound.MessageBeep(winsound.MB_ICONHAND)
-    elif kind=="clean_success":
-        winsound.MessageBeep(winsound.MB_ICONASTERISK)
-    elif kind=="list_click":
-        winsound.Beep(1200, 45)
-    else:
-        winsound.Beep(900, 45)
+# ═══════════════════════════════════════
+#  AUDIO MANAGER (MP3 vía winmm.dll/MCI)
+# ═══════════════════════════════════════
+import ctypes
+
+class AudioManager:
+    """Reproduce archivos MP3 usando MCI (winmm.dll) en Windows.
+
+    No requiere dependencias externas. Si MCI no está disponible (ej.: no Windows),
+    los métodos no hacen nada (silencioso).
+    """
+    SOUND_FILES = {
+        "crear_plato": "Sonido_Crear_Plato.mp3",
+        "error":       "Sonido_Error.mp3",
+        "imprimir":    "Sonido_Imprimir.mp3",
+        "item":        "Sonido_Item.mp3",
+        "limpiar":     "Sonido_Limpiar.mp3",
+        "lista":       "Sonido_Lista_Pedidos.mp3",
+    }
+
+    def __init__(self):
+        self._winmm = None
+        self._aliases: dict[str,str] = {}
+        if os.name == "nt":
+            try:
+                self._winmm = ctypes.windll.winmm
+            except Exception:
+                self._winmm = None
+        if self._winmm:
+            for name, filename in self.SOUND_FILES.items():
+                self._load(name, filename)
+
+    def _mci(self, command: str) -> int:
+        if not self._winmm:
+            return -1
+        try:
+            return self._winmm.mciSendStringW(command, None, 0, None)
+        except Exception:
+            return -1
+
+    def _load(self, name: str, filename: str):
+        if not os.path.exists(filename):
+            return
+        path = os.path.abspath(filename)
+        alias = f"snd_{name}"
+        # Cerrar cualquier alias previo (idempotente)
+        self._mci(f'close {alias}')
+        # Abrir como mpegvideo (MP3) — devuelve 0 si tiene éxito
+        if self._mci(f'open "{path}" type mpegvideo alias {alias}') == 0:
+            self._aliases[name] = alias
+
+    def play(self, name: str):
+        alias = self._aliases.get(name)
+        if not alias:
+            return
+        # Rebobinar y reproducir; permite repetir el mismo sonido sin esperar
+        self._mci(f'seek {alias} to start')
+        self._mci(f'play {alias}')
+
+    def close(self):
+        for alias in list(self._aliases.values()):
+            self._mci(f'close {alias}')
+        self._aliases.clear()
+
+# Instancia global de audio (se inicializa al cargar el módulo)
+audio_mgr = AudioManager()
 
 # ─── DB ───
 def init_db():
@@ -1520,10 +1568,10 @@ class HistorialDialog:
         hora_especifica = p.get("hora_especifica","")
 
         def reimprimir(_e,ped=p):
+            audio_mgr.play("imprimir")
             ticket=generar_ticket_impresion(ped)
             print("\n"+ticket)
             ok,msg=printer.imprimir(ticket)
-            play_notification_sound("print_success" if ok else "print_error")
             if ok:
                 self.on_ticket_impreso()
             self._mostrar_estado_impresion(ok)
@@ -1751,42 +1799,83 @@ def main(page: ft.Page):
     state=PedidoState()
     form=FormularioCliente(page,state)
     resumen=ResumenPedido(page,state)
-    ticket_impreso_overlay=ft.Stack(
-        visible=False,
-        expand=True,
-        controls=[
-            ft.Container(expand=True,bgcolor=ft.Colors.with_opacity(0.30,"black")),
-            ft.Container(
-                expand=True,
-                alignment=ft.Alignment(0,0),
-                content=ft.Container(
-                    content=ft.Column([
-                        ft.Container(
-                            content=ft.Icon(ft.Icons.CHECK_CIRCLE,color=GREEN,size=64),
-                            width=100,height=100,
-                            bgcolor="white",
-                            border_radius=50,
-                            alignment=ft.Alignment(0,0),
-                            shadow=ft.BoxShadow(spread_radius=0,blur_radius=10,color=SHADOW_BLACK_MED,offset=ft.Offset(0,4)),
-                        ),
-                        ft.Text("¡Ticket Impreso!",color="white",size=32,weight=ft.FontWeight.W_900,text_align=ft.TextAlign.CENTER),
-                        ft.Text("El pedido fue enviado a la impresora.",color=ft.Colors.with_opacity(0.9,"white"),size=13,text_align=ft.TextAlign.CENTER),
-                    ],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=14,tight=True),
-                    bgcolor=GREEN,
-                    border_radius=24,
-                    padding=ft.Padding(56,32,56,32),
-                    border=ft.Border.all(3,ft.Colors.with_opacity(0.4,"white")),
-                    shadow=ft.BoxShadow(
-                        spread_radius=0,
-                        blur_radius=20,
-                        color=SHADOW_BLACK_STRONG,
-                        offset=ft.Offset(0,6),
-                    ),
+    # Diálogo flash "Ticket Impreso" — usa AlertDialog para apilarse sobre cualquier
+    # otro diálogo abierto (ej.: la lista de pedidos al reimprimir).
+    ticket_impreso_dialog=ft.AlertDialog(
+        modal=True,
+        bgcolor=ft.Colors.TRANSPARENT,
+        barrier_color=ft.Colors.with_opacity(0.30,"black"),
+        elevation=0,
+        content_padding=ft.Padding.all(0),
+        inset_padding=ft.Padding.symmetric(horizontal=40,vertical=80),
+        shape=ft.RoundedRectangleBorder(radius=24),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.CHECK_CIRCLE,color=GREEN,size=64),
+                    width=100,height=100,
+                    bgcolor="white",
+                    border_radius=50,
+                    alignment=ft.Alignment(0,0),
+                    shadow=ft.BoxShadow(spread_radius=0,blur_radius=10,color=SHADOW_BLACK_MED,offset=ft.Offset(0,4)),
                 ),
+                ft.Text("¡Ticket Impreso!",color="white",size=32,weight=ft.FontWeight.W_900,text_align=ft.TextAlign.CENTER),
+                ft.Text("El pedido fue enviado a la impresora.",color=ft.Colors.with_opacity(0.9,"white"),size=13,text_align=ft.TextAlign.CENTER),
+            ],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=14,tight=True),
+            bgcolor=GREEN,
+            border_radius=24,
+            padding=ft.Padding(56,32,56,32),
+            border=ft.Border.all(3,ft.Colors.with_opacity(0.4,"white")),
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=20,
+                color=SHADOW_BLACK_STRONG,
+                offset=ft.Offset(0,6),
             ),
-        ],
+        ),
     )
-    page.overlay.append(ticket_impreso_overlay)
+    page.overlay.append(ticket_impreso_dialog)
+
+    # Diálogo flash de error (campos incompletos) — mismo estilo, color rojo
+    error_detalle_txt=ft.Text(
+        "Faltan datos del cliente.",
+        color=ft.Colors.with_opacity(0.95,"white"),
+        size=13,text_align=ft.TextAlign.CENTER,
+    )
+    error_dialog=ft.AlertDialog(
+        modal=True,
+        bgcolor=ft.Colors.TRANSPARENT,
+        barrier_color=ft.Colors.with_opacity(0.30,"black"),
+        elevation=0,
+        content_padding=ft.Padding.all(0),
+        inset_padding=ft.Padding.symmetric(horizontal=40,vertical=80),
+        shape=ft.RoundedRectangleBorder(radius=24),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.ERROR_OUTLINE,color=ERROR_RED,size=64),
+                    width=100,height=100,
+                    bgcolor="white",
+                    border_radius=50,
+                    alignment=ft.Alignment(0,0),
+                    shadow=ft.BoxShadow(spread_radius=0,blur_radius=10,color=SHADOW_BLACK_MED,offset=ft.Offset(0,4)),
+                ),
+                ft.Text("Campos Incompletos",color="white",size=30,weight=ft.FontWeight.W_900,text_align=ft.TextAlign.CENTER),
+                error_detalle_txt,
+            ],horizontal_alignment=ft.CrossAxisAlignment.CENTER,spacing=14,tight=True),
+            bgcolor=ERROR_RED,
+            border_radius=24,
+            padding=ft.Padding(56,32,56,32),
+            border=ft.Border.all(3,ft.Colors.with_opacity(0.4,"white")),
+            shadow=ft.BoxShadow(
+                spread_radius=0,
+                blur_radius=20,
+                color=SHADOW_BLACK_STRONG,
+                offset=ft.Offset(0,6),
+            ),
+        ),
+    )
+    page.overlay.append(error_dialog)
 
     def mostrar_mensaje_estado(texto: str, ok: bool):
         page.snack_bar=ft.SnackBar(ft.Text(texto,color="white"),bgcolor=GREEN if ok else ERROR_RED)
@@ -1794,17 +1883,36 @@ def main(page: ft.Page):
         page.update()
 
     async def _flash_ticket_impreso():
-        if ticket_impreso_overlay in page.overlay:
-            page.overlay.remove(ticket_impreso_overlay)
-        page.overlay.append(ticket_impreso_overlay)
-        ticket_impreso_overlay.visible=True
+        # Reapilar al final del overlay para asegurar que quede visualmente encima
+        if ticket_impreso_dialog in page.overlay:
+            page.overlay.remove(ticket_impreso_dialog)
+        page.overlay.append(ticket_impreso_dialog)
+        ticket_impreso_dialog.open=True
         page.update()
         await asyncio.sleep(1.2)
-        ticket_impreso_overlay.visible=False
+        ticket_impreso_dialog.open=False
         page.update()
 
     def mostrar_ticket_impreso():
         page.run_task(_flash_ticket_impreso)
+
+    async def _flash_error(detalle: str):
+        error_detalle_txt.value=detalle
+        if error_dialog in page.overlay:
+            page.overlay.remove(error_dialog)
+        page.overlay.append(error_dialog)
+        error_dialog.open=True
+        page.update()
+        await asyncio.sleep(1.5)
+        error_dialog.open=False
+        page.update()
+
+    def mostrar_error_campos(faltantes: list[str]):
+        if len(faltantes)==1:
+            detalle=f"Falta llenar el campo: {faltantes[0]}."
+        else:
+            detalle="Faltan los campos: " + ", ".join(faltantes) + "."
+        page.run_task(_flash_error,detalle)
 
     def cargar_pedido_para_editar(ped):
         state.cargar_desde_pedido(ped)
@@ -1827,6 +1935,7 @@ def main(page: ft.Page):
     historial=HistorialDialog(page,cargar_pedido_para_editar,mostrar_ticket_impreso)
 
     def on_product(name,price):
+        audio_mgr.play("item")
         if not state.platos:
             state.crear_plato()
         item_dlg.show(name,price)
@@ -1834,13 +1943,31 @@ def main(page: ft.Page):
     menu=MenuProductos(on_product)
 
     def on_imprimir(_e):
-        tel=form.get_tel()
+        # Sonido al presionar el botón de imprimir
+        audio_mgr.play("imprimir")
+        # Validación de campos obligatorios del cliente
+        domicilio=(form.tf_dom.value or "").strip()
+        cruces=(form.tf_cru.value or "").strip()
+        tel_activo="si" in form.seg_tel.selected
+        tel=form.get_tel()  # vacío si seg_tel = "no"
+        faltantes=[]
+        if not domicilio:
+            faltantes.append("Domicilio")
+        if not cruces:
+            faltantes.append("Cruces")
+        if tel_activo and not tel:
+            faltantes.append("Teléfono")
+        if faltantes:
+            audio_mgr.play("error")
+            mostrar_error_campos(faltantes)
+            return
+        # Cliente OK — continuar con la impresión
         if tel and not state.cli_existe:
-            guardar_cliente(tel,form.tf_dom.value.strip(),form.tf_cru.value.strip())
+            guardar_cliente(tel,domicilio,cruces)
             state.cli_existe=True
         now=datetime.now()
         ped={"fecha":now.strftime("%Y-%m-%d"),"hora":now.strftime("%H:%M:%S"),
-             "telefono":tel,"domicilio":form.tf_dom.value.strip(),"cruces":form.tf_cru.value.strip(),
+             "telefono":tel,"domicilio":domicilio,"cruces":cruces,
              "hora_especifica":form.get_hora_str(),
              "platos":[p.to_dict() for p in state.platos],"total":state.total()}
         # Guardar pedido del día en JSON
@@ -1849,21 +1976,21 @@ def main(page: ft.Page):
         print("\n"+ticket)  # Consola siempre
         # Intentar impresión física
         ok,msg=printer.imprimir(ticket)
-        play_notification_sound("print_success" if ok else "print_error")
         if ok:
             mostrar_ticket_impreso()
         mostrar_mensaje_estado("Impresion Exitosa" if ok else "Error de impresion",ok)
 
     def on_limpiar(_e):
+        audio_mgr.play("limpiar")
         state.limpiar(); form.limpiar(); resumen.refresh()
-        play_notification_sound("clean_success")
         mostrar_mensaje_estado("Limpiesa Exitosa",True)
 
     def on_crear_plato(_e):
+        audio_mgr.play("crear_plato")
         state.crear_plato(); resumen.refresh()
 
     def on_lista(_e):
-        play_notification_sound("list_click")
+        audio_mgr.play("lista")
         historial.mostrar()
 
     def action_btn(icon,label,bgcolor,fgcolor,fn,subtitle=None):

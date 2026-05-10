@@ -1,0 +1,72 @@
+{
+  "Comida": [
+    [
+      "Torta",
+      60
+    ],
+    [
+      "Torta Mini",
+      30
+    ],
+    [
+      "Taco Dorado",
+      10
+    ],
+    [
+      "Taco c/Carne",
+      25
+    ],
+    [
+      "Kilo de Carne",
+      300
+    ],
+    [
+      "Crear Producto",
+      0
+    ]
+  ],
+  "Paquetes": [
+    [
+      "Paquete #1",
+      90
+    ],
+    [
+      "Paquete #2",
+      95
+    ],
+    [
+      "Paquete #3",
+      220
+    ],
+    [
+      "Paquete #4",
+      345
+    ],
+    [
+      "Paquete #5",
+      680
+    ]
+  ],
+  "Bebidas": [
+    [
+      "Refresco",
+      30
+    ],
+    [
+      "Cerveza",
+      25
+    ],
+    [
+      "Agua Fresca 500ml",
+      15
+    ],
+    [
+      "Agua Fresca 1LT",
+      25
+    ],
+    [
+      "Caguama",
+      70
+    ]
+  ]
+}
