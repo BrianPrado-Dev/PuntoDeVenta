@@ -28,6 +28,9 @@ WIN32_AVAILABLE = WIN32_PRINT_AVAILABLE
 DB_PATH = "clientes.db"
 PEDIDOS_PATH = "pedidos_dia.json"
 PEDIDOS_TXT_TEMPLATE = "pedidos_{fecha}.txt"
+CONTADOR_PATH = "contador.json"
+NEGOCIO_TEL = "+52 33-36844525"
+NEGOCIO_DIR = "Geranio 869A"
 
 MENU = {
     "Comida": [("Torta",60),("Torta Mini",30),("Taco Dorado",10),("Taco c/Carne",25),("Kilo de Carne",300),("Crear Producto",0)],
@@ -158,6 +161,69 @@ class AudioManager:
 # Instancia global de audio (se inicializa al cargar el módulo)
 audio_mgr = AudioManager()
 
+# ═══════════════════════════════════════
+#  TOUCH KEYBOARD CONTROLLER (Windows TabTip)
+# ═══════════════════════════════════════
+import subprocess
+import threading
+import time as _time
+
+class TouchKeyboardController:
+    """Controla TabTip.exe. Por defecto BLOQUEA (cierra) el teclado táctil.
+
+    `allow()` lo permite y lo lanza; `deny()` lo bloquea. Un thread daemon de fondo
+    cierra continuamente la ventana `IPTip_Main_Window` cuando NO está permitido,
+    neutralizando el auto-pop de Windows en cualquier control.
+    """
+    TABTIP_PATH = r"C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe"
+
+    def __init__(self):
+        self._allowed=False
+        self._stop=False
+        self._user32=None
+        if os.name=="nt":
+            try:
+                self._user32=ctypes.windll.user32
+            except Exception:
+                self._user32=None
+        if self._user32 is not None:
+            th=threading.Thread(target=self._loop,daemon=True)
+            th.start()
+
+    def _hide_now(self):
+        if not self._user32: return
+        try:
+            hwnd=self._user32.FindWindowW("IPTip_Main_Window", None)
+            if hwnd:
+                # WM_SYSCOMMAND 0x0112, SC_CLOSE 0xF060
+                self._user32.PostMessageW(hwnd, 0x0112, 0xF060, 0)
+        except Exception:
+            pass
+
+    def _loop(self):
+        while not self._stop:
+            if not self._allowed:
+                self._hide_now()
+            _time.sleep(0.15)
+
+    def allow(self):
+        self._allowed=True
+        if os.name!="nt": return
+        try:
+            subprocess.Popen([self.TABTIP_PATH], shell=False)
+        except Exception:
+            pass
+
+    def deny(self):
+        self._allowed=False
+        self._hide_now()
+
+    def stop(self):
+        self._stop=True
+
+# Instancia global del controlador del teclado táctil
+touch_kb = TouchKeyboardController()
+
 # ─── DB ───
 def init_db():
     c=sqlite3.connect(DB_PATH); c.execute(
@@ -247,6 +313,72 @@ def eliminar_pedido(pedido):
             return True
     return False
 
+# ─── Contador num pedido (persistente) ───
+def _leer_contador():
+    if not os.path.exists(CONTADOR_PATH):
+        return 0
+    try:
+        with open(CONTADOR_PATH,"r",encoding="utf-8") as f:
+            data=json.load(f)
+        return int(data.get("num",0))
+    except (json.JSONDecodeError,OSError,ValueError,TypeError):
+        return 0
+
+def _guardar_contador(n):
+    try:
+        with open(CONTADOR_PATH,"w",encoding="utf-8") as f:
+            json.dump({"num":int(n)},f,ensure_ascii=False)
+    except OSError:
+        pass
+
+def siguiente_num_pedido():
+    n=_leer_contador()+1
+    _guardar_contador(n)
+    return n
+
+# ─── Resumen bebidas para el ticket ───
+def resumen_bebidas(ped):
+    """Cuenta bebidas en todo el pedido. Devuelve list[(label, qty)].
+
+    Refresco -> "<sabor>"; Cerveza -> "Cerveza <tipo>";
+    Agua Fresca 500ml -> "<sabor> CH"; Agua Fresca 1LT -> "<sabor> GD";
+    Caguama -> "Caguama"; Paquete #1/#2 -> extrae "Bebida: ..." de variant.
+    """
+    counts={}
+    order=[]
+    def _add(label,qty):
+        if not label: return
+        if label not in counts: order.append(label)
+        counts[label]=counts.get(label,0)+qty
+    for pl in ped.get("platos",[]):
+        for it in pl.get("items",[]):
+            name=it.get("name","")
+            try: qty=int(it.get("qty",0) or 0)
+            except (TypeError,ValueError): qty=0
+            variant=str(it.get("variant","") or "")
+            if qty<=0: continue
+            if name=="Refresco":
+                for sabor in [s.strip() for s in variant.split(",") if s.strip()]:
+                    _add(sabor,qty)
+            elif name=="Cerveza":
+                for tipo in [s.strip() for s in variant.split(",") if s.strip()]:
+                    _add(f"Cerveza {tipo}",qty)
+            elif name=="Agua Fresca 500ml":
+                for sabor in [s.strip() for s in variant.split(",") if s.strip()]:
+                    _add(f"{sabor} CH",qty)
+            elif name=="Agua Fresca 1LT":
+                for sabor in [s.strip() for s in variant.split(",") if s.strip()]:
+                    _add(f"{sabor} GD",qty)
+            elif name=="Caguama":
+                _add("Caguama",qty)
+            elif name in ("Paquete #1","Paquete #2"):
+                if "Bebida:" in variant:
+                    beb=variant.split("Bebida:",1)[1].strip()
+                    beb=beb.split("|")[0].strip()
+                    if beb:
+                        _add(beb,qty)
+    return [(l,counts[l]) for l in order]
+
 # ─── Ticket 32 chars ───
 def centrar(texto, ancho=TICKET_TEXT_WIDTH):
     return str(texto or "")[:ancho].center(ancho)
@@ -276,7 +408,9 @@ def formatear_moneda(valor):
     return f"${n:.2f}"
 
 def formatear_renglon_producto(item):
-    nombre=str(item.get("name",""))[:PRODUCTO_ANCHO].ljust(PRODUCTO_ANCHO)
+    # Prefijo "- " para item; variantes van sin prefijo (indentadas con 2 esp)
+    nombre_ancho=PRODUCTO_ANCHO-2
+    nombre=str(item.get("name",""))[:nombre_ancho].ljust(nombre_ancho)
     qty=item.get("qty",0)
     if isinstance(qty,float) and qty.is_integer(): qty=int(qty)
     cantidad=str(qty).center(CANTIDAD_ANCHO)
@@ -285,11 +419,14 @@ def formatear_renglon_producto(item):
     except (TypeError, ValueError):
         subtotal=0
     precio=formatear_moneda(subtotal).rjust(PRECIO_ANCHO)
-    return f"{nombre}{cantidad}{precio}"
+    return f"- {nombre}{cantidad}{precio}"
 
 def generar_ticket_impresion(ped):
     s="="*TICKET_TEXT_WIDTH
-    t=[centrar("TORTAS SUSY"),s]
+    t=[centrar("TORTAS SUSY"),
+       centrar(NEGOCIO_TEL),
+       centrar(NEGOCIO_DIR),
+       s]
     t.extend(dividir_campo("Fecha",ped.get("fecha","")))
     t.extend(dividir_campo("Hora",ped.get("hora","")))
     t.append(s)
@@ -297,17 +434,31 @@ def generar_ticket_impresion(ped):
         v=ped.get(k,"")
         if v: t.extend(dividir_campo(l,v))
     t+=[s,centrar("PEDIDO"),"-"*TICKET_TEXT_WIDTH,
-        f"{'Producto'.ljust(PRODUCTO_ANCHO)}{'Cant'.center(CANTIDAD_ANCHO)}{'Precio'.rjust(PRECIO_ANCHO)}",
+        f"  {'Producto'.ljust(PRODUCTO_ANCHO-2)}{'Cant'.center(CANTIDAD_ANCHO)}{'Precio'.rjust(PRECIO_ANCHO)}",
         "-"*TICKET_TEXT_WIDTH]
     for pl in ped.get("platos",[]):
         t.extend(dividir_texto(f"[{pl['nombre']}]"))
         for it in pl.get("items",[]):
             t.append(formatear_renglon_producto(it))
             vr=it.get('variant','')
-            if vr: t.extend(dividir_texto(f"-> {vr}"))
+            if vr:
+                # Variante: indentada con 2 espacios, SIN guion (distingue de item)
+                for linea in dividir_texto(vr,ancho_max=TICKET_TEXT_WIDTH-2):
+                    t.append("  "+linea)
     total_txt=formatear_moneda(ped.get("total",0))
-    t+=[s,f"{'TOTAL:'.ljust(TICKET_TEXT_WIDTH-PRECIO_ANCHO)}{total_txt.rjust(PRECIO_ANCHO)}",
-        s,centrar("Gracias por su compra!"),"","",""]
+    t+=[s,f"{'TOTAL:'.ljust(TICKET_TEXT_WIDTH-PRECIO_ANCHO)}{total_txt.rjust(PRECIO_ANCHO)}",s]
+    bebidas=resumen_bebidas(ped)
+    if bebidas:
+        t.append(centrar("RESUMEN DE BEBIDAS"))
+        t.append("-"*TICKET_TEXT_WIDTH)
+        for label,qty in bebidas:
+            t.extend(dividir_texto(f"{label}: {qty}"))
+        t.append(s)
+    num=ped.get("num_pedido")
+    if num is not None:
+        t.append(centrar(f"Num. Pedido: {num}"))
+        t.append(s)
+    t+=[centrar("Gracias Por Su Preferencia!"),"","",""]
     return "\n".join(t)
 
 
@@ -458,9 +609,17 @@ class FormularioCliente:
     def __init__(self,page,state):
         self.page=page; self.state=state
         ts=dict(dense=True,border_color=ACCENT2,color=TXT,bgcolor=INPUT_BG,text_size=13,height=40)
-        self.tf_dom=ft.TextField(width=200,**ts)
-        self.tf_cru=ft.TextField(width=200,**ts)
-        self.tf_tel=ft.TextField(width=150,on_blur=self._buscar,on_submit=self._buscar,**ts)
+        # Habilitar teclado táctil SOLO en estos 3 campos
+        def _kb_on(_e):
+            touch_kb.allow()
+        def _kb_off(_e):
+            touch_kb.deny()
+        def _kb_off_tel(e):
+            touch_kb.deny()
+            self._buscar(e)
+        self.tf_dom=ft.TextField(width=200,on_focus=_kb_on,on_blur=_kb_off,**ts)
+        self.tf_cru=ft.TextField(width=200,on_focus=_kb_on,on_blur=_kb_off,**ts)
+        self.tf_tel=ft.TextField(width=150,on_focus=_kb_on,on_blur=_kb_off_tel,on_submit=self._buscar,**ts)
         # Segmented buttons
         self.seg_tel=ft.SegmentedButton(
             segments=[ft.Segment(value="si",label=ft.Text("Sí",color=TXT)),ft.Segment(value="no",label=ft.Text("No",color=TXT))],
@@ -1986,7 +2145,8 @@ def main(page: ft.Page):
         ped={"fecha":now.strftime("%Y-%m-%d"),"hora":now.strftime("%H:%M:%S"),
              "telefono":tel,"domicilio":domicilio,"cruces":cruces,
              "hora_especifica":form.get_hora_str(),
-             "platos":[p.to_dict() for p in state.platos],"total":state.total()}
+             "platos":[p.to_dict() for p in state.platos],"total":state.total(),
+             "num_pedido":siguiente_num_pedido()}
         # Guardar pedido del día en JSON
         guardar_pedido(ped)
         ticket=generar_ticket_impresion(ped)
