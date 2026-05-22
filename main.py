@@ -164,62 +164,133 @@ audio_mgr = AudioManager()
 # ═══════════════════════════════════════
 #  TOUCH KEYBOARD CONTROLLER (Windows TabTip)
 # ═══════════════════════════════════════
-import subprocess
+import atexit
 import threading
 import time as _time
 
-class TouchKeyboardController:
-    """Controla TabTip.exe. Por defecto BLOQUEA (cierra) el teclado táctil.
 
-    `allow()` lo permite y lo lanza; `deny()` lo bloquea. Un thread daemon de fondo
-    cierra continuamente la ventana `IPTip_Main_Window` cuando NO está permitido,
-    neutralizando el auto-pop de Windows en cualquier control.
+class TouchKeyboardController:
+    """Controla el teclado táctil de Windows (TabTip) de forma segura.
+
+    API pública (compatible con la versión anterior):
+        allow(e=None) → muestra el teclado; usar en on_focus de los campos permitidos.
+        deny(e=None)  → oculta el teclado; usar en on_blur o en on_focus de otros campos.
+        stop()        → oculta el teclado al cerrar la app.
+
+    Por qué esta implementación NO bloquea el TabletInputService de Windows
+    (a diferencia de la versión anterior, que requería reiniciar la PC):
+
+      • No corre un thread de fondo que pollea cada 40 ms enviando
+        WM_SYSCOMMAND/SC_CLOSE. La versión previa enviaba ese mensaje a
+        clases UWP GENÉRICAS (`ApplicationFrameWindow`, `Windows.UI.Core.CoreWindow`),
+        compartidas por todas las apps UWP del sistema (Calculadora,
+        Configuración y, crítico, `TextInputHost.exe` — el host real del
+        teclado). Tras un rato de uso, TextInputHost se corrompía y el
+        servicio TabletInputService quedaba inutilizable hasta reiniciar.
+      • Opera ÚNICAMENTE sobre `IPTip_Main_Window` (la clase real del
+        teclado táctil), nunca sobre clases UWP compartidas.
+      • Lanza TabTip.exe a lo sumo UNA vez por sesión (solo si la ventana
+        del teclado aún no existe) y vía `os.startfile`, que no retiene
+        handles del lado de Python — esto elimina la acumulación de
+        procesos huérfanos que provocaba la saturación del servicio.
+      • Para ocultar usa `ShowWindow(SW_HIDE)`, no `SC_CLOSE`. Solo se
+        oculta la ventana; el proceso TabTip sigue vivo y el usuario
+        puede invocar el teclado manualmente desde la barra de tareas
+        en cualquier momento sin interferencia del programa.
+      • Llamadas serializadas con Lock + debounce de 100 ms, para absorber
+        las ráfagas de focus/blur duplicados que emite Flet sin
+        saturar las APIs de Windows.
     """
+
     TABTIP_PATH = r"C:\Program Files\Common Files\microsoft shared\ink\TabTip.exe"
+    KB_CLASS = "IPTip_Main_Window"  # única clase segura del teclado táctil
+
+    _SW_HIDE = 0
+    _SW_SHOWNOACTIVATE = 4
+    _DEBOUNCE_S = 0.10
 
     def __init__(self):
-        self._allowed=False
-        self._stop=False
-        self._user32=None
-        if os.name=="nt":
+        self._user32 = None
+        self._lock = threading.Lock()
+        self._last_kind = None
+        self._last_ts = 0.0
+        if os.name == "nt":
             try:
-                self._user32=ctypes.windll.user32
+                self._user32 = ctypes.windll.user32
             except Exception:
-                self._user32=None
-        if self._user32 is not None:
-            th=threading.Thread(target=self._loop,daemon=True)
-            th.start()
+                self._user32 = None
+        atexit.register(self._cleanup)
 
-    def _hide_now(self):
-        if not self._user32: return
+    def _find_kb(self) -> int:
+        if not self._user32:
+            return 0
         try:
-            hwnd=self._user32.FindWindowW("IPTip_Main_Window", None)
+            return int(self._user32.FindWindowW(self.KB_CLASS, None) or 0)
+        except Exception:
+            return 0
+
+    def _start_tabtip(self) -> None:
+        if not os.path.exists(self.TABTIP_PATH):
+            return
+        try:
+            # os.startfile no deja handles abiertos del lado de Python
+            # (a diferencia de subprocess.Popen sin .wait/.poll, que acumulaba
+            # procesos huérfanos cada vez que se hacía focus en un campo).
+            os.startfile(self.TABTIP_PATH)
+        except Exception:
+            pass
+
+    def _debounced(self, kind: str) -> bool:
+        now = _time.monotonic()
+        if self._last_kind == kind and (now - self._last_ts) < self._DEBOUNCE_S:
+            return False
+        self._last_kind = kind
+        self._last_ts = now
+        return True
+
+    def allow(self, _e=None):
+        if os.name != "nt" or not self._user32:
+            return
+        with self._lock:
+            if not self._debounced("allow"):
+                return
+            hwnd = self._find_kb()
             if hwnd:
-                # WM_SYSCOMMAND 0x0112, SC_CLOSE 0xF060
-                self._user32.PostMessageW(hwnd, 0x0112, 0xF060, 0)
-        except Exception:
-            pass
+                try:
+                    self._user32.ShowWindow(hwnd, self._SW_SHOWNOACTIVATE)
+                except Exception:
+                    pass
+            else:
+                # Primera vez en la sesión: arrancar TabTip. Una vez corriendo,
+                # los siguientes allow() solo harán ShowWindow sobre la misma ventana.
+                self._start_tabtip()
 
-    def _loop(self):
-        while not self._stop:
-            if not self._allowed:
-                self._hide_now()
-            _time.sleep(0.15)
-
-    def allow(self):
-        self._allowed=True
-        if os.name!="nt": return
-        try:
-            subprocess.Popen([self.TABTIP_PATH], shell=False)
-        except Exception:
-            pass
-
-    def deny(self):
-        self._allowed=False
-        self._hide_now()
+    def deny(self, _e=None):
+        if os.name != "nt" or not self._user32:
+            return
+        with self._lock:
+            if not self._debounced("deny"):
+                return
+            hwnd = self._find_kb()
+            if hwnd:
+                try:
+                    self._user32.ShowWindow(hwnd, self._SW_HIDE)
+                except Exception:
+                    pass
 
     def stop(self):
-        self._stop=True
+        self._cleanup()
+
+    def _cleanup(self):
+        if not self._user32:
+            return
+        try:
+            hwnd = self._find_kb()
+            if hwnd:
+                self._user32.ShowWindow(hwnd, self._SW_HIDE)
+        except Exception:
+            pass
+
 
 # Instancia global del controlador del teclado táctil
 touch_kb = TouchKeyboardController()
@@ -1129,6 +1200,7 @@ class ItemDialog:
             color=TXT,
             border_color=ACCENT2,
             focused_border_color=ACCENT,
+            on_focus=touch_kb.deny,
         )
         tf_p=ft.TextField(
             label="Precio",
@@ -1140,6 +1212,7 @@ class ItemDialog:
             focused_border_color=ACCENT,
             suffix=ft.Text("$"),
             keyboard_type=ft.KeyboardType.NUMBER,
+            on_focus=touch_kb.deny,
         )
         dlg=ft.AlertDialog(
             bgcolor=BG_CARD,
@@ -1269,8 +1342,8 @@ class ItemDialog:
         sel=set(); btns=self._toggle_btns(MEAT_TYPES,sel,max_sel=1)
         mul,qty=self._multiplier()
         mode=["gramos"]
-        tf_g=ft.TextField(value="",width=130,dense=True,text_size=14,color=TXT,border_color=ACCENT_SOFT,focused_border_color=ACCENT,suffix=ft.Text("g"),keyboard_type=ft.KeyboardType.NUMBER)
-        tf_d=ft.TextField(value="",width=130,dense=True,text_size=14,color=TXT,border_color=ACCENT_SOFT,focused_border_color=ACCENT,suffix=ft.Text("$"),keyboard_type=ft.KeyboardType.NUMBER,disabled=True)
+        tf_g=ft.TextField(value="",width=130,dense=True,text_size=14,color=TXT,border_color=ACCENT_SOFT,focused_border_color=ACCENT,suffix=ft.Text("g"),keyboard_type=ft.KeyboardType.NUMBER,on_focus=touch_kb.deny)
+        tf_d=ft.TextField(value="",width=130,dense=True,text_size=14,color=TXT,border_color=ACCENT_SOFT,focused_border_color=ACCENT,suffix=ft.Text("$"),keyboard_type=ft.KeyboardType.NUMBER,disabled=True,on_focus=touch_kb.deny)
         seg=ft.SegmentedButton(segments=[ft.Segment(value="gramos",label=ft.Text("⚖️ Gramos")),ft.Segment(value="dinero",label=ft.Text("💵 Dinero"))],
             selected=["gramos"],allow_empty_selection=False,on_change=lambda e: _mc(e))
         def _mc(e):
@@ -1515,6 +1588,7 @@ class ResumenPedido:
             if self._editing_idx==pi:
                 name_ctl=ft.TextField(value=plato.nombre,dense=True,height=38,text_size=17,
                                       color=TXT,width=180,border_color=ACCENT,
+                                      on_focus=touch_kb.deny,
                                       on_submit=lambda e,idx=pi: self._rename_done(e,idx))
             else:
                 name_ctl=ft.Row([
@@ -1929,16 +2003,6 @@ class HistorialDialog:
                     ft.Text("Pedidos del día",size=18,weight=ft.FontWeight.W_900,color="white"),
                     ft.Text(f"{len(pedidos_hoy)} pedidos · {datetime.now().strftime('%d/%m/%Y')}",size=11,color=ft.Colors.with_opacity(0.85,"white")),
                 ],spacing=2,alignment=ft.MainAxisAlignment.CENTER),
-                ft.Container(expand=True),
-                ft.Container(
-                    content=ft.Row([
-                        ft.Icon(ft.Icons.ATTACH_MONEY,color="white",size=14),
-                        ft.Text(f"${sum(p.get('total',0) for p in pedidos_hoy)}",color="white",size=14,weight=ft.FontWeight.W_900),
-                    ],spacing=2),
-                    bgcolor=ft.Colors.with_opacity(0.22,"white"),
-                    border_radius=12,
-                    padding=ft.Padding(12,6,12,6),
-                ),
             ],spacing=12,vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=ACCENT,
             padding=ft.Padding(16,12,16,12),
